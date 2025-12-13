@@ -4,9 +4,11 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Menu, X } from "lucide-react"
 import { Logo } from "./logo"
+import { useRouter } from "next/navigation"
 
 export function Navigation() {
   const [isOpen, setIsOpen] = useState(false)
+  const router = useRouter()
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-border">
@@ -35,7 +37,15 @@ export function Navigation() {
             <a href="#contact" className="text-foreground hover:text-primary transition-colors">
               Contact
             </a>
+            <Button
+              variant="outline"
+              onClick={() => router.push("/login")}
+              className="ml-2"
+            >
+              Login
+            </Button>
             <Button className="bg-primary text-primary-foreground hover:bg-primary/90">Book Now</Button>
+           
           </div>
 
           <div className="md:hidden">
@@ -87,6 +97,9 @@ export function Navigation() {
             </a>
             <div className="px-3 py-2">
               <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90">Book Now</Button>
+            </div>
+            <div className="px-3 pb-4">
+              <Button variant="outline" className="w-full" onClick={() => router.push("/login")}>Login</Button>
             </div>
           </div>
         </div>

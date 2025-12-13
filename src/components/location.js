@@ -1,4 +1,5 @@
 import { MapPin, Phone, Mail, Clock } from "lucide-react"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 
 export function Location() {
   return (
@@ -13,9 +14,9 @@ export function Location() {
 
         <div className="grid lg:grid-cols-2 gap-12 items-start">
           {/* Map */}
-          <div className="relative h-[400px] lg:h-[500px] rounded-2xl overflow-hidden bg-muted">
+          <Card className="relative h-[400px] lg:h-[500px] rounded-2xl overflow-hidden bg-muted p-0">
             <iframe
-              src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3151.835434509374!2d144.9537353!3d-37.8162791!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x6ad642af0f11fd81%3A0xf577d1b91c1b5e0!2sJopats%20Resort!5e0!3m2!1sen!2s!4v1234567890123!5m2!1sen!2s"
+              src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3891.665875271641!2d121.49992367511874!3d12.735206887558864!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x33bb51d7f9c6dbad%3A0x8b7294ec52f63e66!2sJopat&#39;s%20Hotel%20%26%20Resort!5e0!3m2!1sfil!2sph!4v1765646028099!5m2!1sfil!2sph"
               width="100%"
               height="100%"
               style={{ border: 0 }}
@@ -24,10 +25,27 @@ export function Location() {
               referrerPolicy="no-referrer-when-downgrade"
               className="absolute inset-0"
             />
-          </div>
+            <div className="absolute top-4 left-4">
+              <a
+                href="https://maps.google.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open map in Google Maps"
+                className="inline-flex items-center gap-2 px-3 py-2 bg-background/80 text-foreground rounded-md border border-border hover:shadow-md transition-shadow backdrop-blur"
+              >
+                <MapPin className="w-4 h-4" />
+                Open in Maps
+              </a>
+            </div>
+          </Card>
 
           {/* Contact Information */}
-          <div className="space-y-8">
+          <Card className="rounded-2xl p-6">
+            <CardHeader>
+              <h3 className="text-2xl font-serif font-bold text-foreground">Contact & Location</h3>
+              <p className="text-muted-foreground mt-1">Visit us or get in touch for bookings</p>
+            </CardHeader>
+            <CardContent className="space-y-6">
             <div className="flex gap-4">
               <div className="flex-shrink-0 w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
                 <MapPin className="w-6 h-6 text-primary" />
@@ -82,17 +100,35 @@ export function Location() {
               </div>
             </div>
 
-            <div className="pt-4">
+            <div className="pt-1 flex gap-3">
+              <a
+                href="tel:+631234567890"
+                aria-label="Call Jopats Resort"
+                className="inline-flex items-center justify-center gap-2 flex-1 px-4 py-3 bg-primary text-primary-foreground rounded-lg font-semibold hover:bg-primary/90 transition-colors"
+              >
+                Call Us
+              </a>
+              <a
+                href="mailto:info@jopatsresort.com"
+                aria-label="Email Jopats Resort"
+                className="inline-flex items-center justify-center gap-2 flex-1 px-4 py-3 border border-border rounded-lg text-foreground bg-background hover:shadow-sm transition-colors"
+              >
+                Email
+              </a>
+            </div>
+            <div className="pt-3">
               <a
                 href="https://maps.google.com"
                 target="_blank"
                 rel="noopener noreferrer"
+                aria-label="Get directions"
                 className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-lg font-semibold hover:bg-primary/90 transition-colors"
               >
                 Get Directions
               </a>
             </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </section>

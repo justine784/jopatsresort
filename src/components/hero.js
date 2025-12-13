@@ -1,11 +1,12 @@
 import { Button } from "@/components/ui/button"
+import Image from "next/image"
 import { Calendar } from "lucide-react"
 
 export function Hero() {
   return (
     <section id="home" className="relative h-screen flex items-center justify-center overflow-hidden pt-16">
       <div className="absolute inset-0 z-0">
-        <img src="/jopats.jpg" alt="Jopats Resort" className="w-full h-full object-cover" />
+        <Image src="/jopats.jpg" alt="Jopats Resort" fill className="object-cover" />
         <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/30 to-black/50" />
       </div>
 

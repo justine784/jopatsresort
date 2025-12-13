@@ -7,7 +7,7 @@ const testimonials = [
     location: "California, USA",
     rating: 5,
     comment:
-      "Jopats Resort exceeded all our expectations! The cottage was spacious, clean, and had an amazing view. The staff was incredibly friendly and attentive. We can't wait to come back!",
+      "Jopats Resort exceeded all our expectations! The cottage was spacious, clean, and had an amazing view. The staff was incredibly friendly and attentive. We can&apos;t wait to come back!",
     date: "January 2025",
   },
   {
@@ -56,7 +56,7 @@ export function Feedback() {
                 ))}
               </div>
 
-              <p className="text-foreground mb-6 leading-relaxed">"{testimonial.comment}"</p>
+              <p className="text-foreground mb-6 leading-relaxed">&ldquo;{testimonial.comment}&rdquo;</p>
 
               <div className="flex items-center justify-between pt-4 border-t border-border">
                 <div>

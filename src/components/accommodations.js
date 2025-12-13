@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import Image from "next/image"
 import { Users, Bed, Maximize } from "lucide-react"
 
 const accommodations = [
@@ -62,35 +63,39 @@ export function Accommodations() {
                 {accommodation.images && accommodation.images.length > 1 ? (
                   // Multiple images layout for Family Suite
                   <div className="aspect-[4/3] grid grid-cols-2 gap-1 overflow-hidden">
-                    <div className="row-span-2">
-                      <img
+                    <div className="row-span-2 relative">
+                      <Image
                         src={accommodation.images[0] || "/placeholder.svg"}
                         alt={`${accommodation.type} - Main view`}
-                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                        fill
+                        className="object-cover hover:scale-105 transition-transform duration-300"
                       />
                     </div>
-                    <div>
-                      <img
+                    <div className="relative">
+                      <Image
                         src={accommodation.images[1] || "/placeholder.svg"}
                         alt={`${accommodation.type} - Bedroom`}
-                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                        fill
+                        className="object-cover hover:scale-105 transition-transform duration-300"
                       />
                     </div>
-                    <div>
-                      <img
+                    <div className="relative">
+                      <Image
                         src={accommodation.images[2] || "/placeholder.svg"}
                         alt={`${accommodation.type} - Bathroom`}
-                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                        fill
+                        className="object-cover hover:scale-105 transition-transform duration-300"
                       />
                     </div>
                   </div>
                 ) : (
                   // Single image layout
-                  <div className="aspect-[4/3] overflow-hidden">
-                    <img
+                  <div className="aspect-[4/3] overflow-hidden relative">
+                    <Image
                       src={accommodation.image || "/placeholder.svg"}
                       alt={accommodation.type}
-                      className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                      fill
+                      className="object-cover hover:scale-105 transition-transform duration-300"
                     />
                   </div>
                 )}
