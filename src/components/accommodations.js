@@ -26,7 +26,7 @@ const accommodations = [
     features: ["Two Bedrooms", "Living Room", "Kitchenette", "Garden View"],
   },
   {
-    type: "Private Cottage",
+    type: "Cottage",
     image: "/cottage.jpg",
     images: null, // Single image
     price: "$350",
