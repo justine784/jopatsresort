@@ -7,7 +7,7 @@ const accommodations = [
     type: "Deluxe Room",
     image: "/room1.jpg",
     images: null, // Single image
-    price: "$150",
+    price: "₱150",
     guests: 2,
     beds: 1,
     size: "35 sqm",
@@ -18,7 +18,7 @@ const accommodations = [
     type: "Family Suite",
     image: "/family.jpg",
     images: ["/family.jpg", "/room1.jpg", "/room2.jpg"], // Multiple images for collage
-    price: "$250",
+    price: "₱250",
     guests: 4,
     beds: 2,
     size: "55 sqm",
@@ -29,7 +29,7 @@ const accommodations = [
     type: "Cottage",
     image: "/cottage.jpg",
     images: null, // Single image
-    price: "$350",
+    price: "₱350",
     guests: 6,
     beds: 3,
     size: "85 sqm",
