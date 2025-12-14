@@ -44,7 +44,7 @@ export function Navigation() {
             >
               Login
             </Button>
-            <Button className="bg-primary text-primary-foreground hover:bg-primary/90">Book Now</Button>
+            <Button className="bg-primary text-primary-foreground hover:bg-primary/90" onClick={() => router.push('/register')}>Book Now</Button>
            
           </div>
 
@@ -96,7 +96,7 @@ export function Navigation() {
               Contact
             </a>
             <div className="px-3 py-2">
-              <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90">Book Now</Button>
+              <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90" onClick={() => router.push('/register')}>Book Now</Button>
             </div>
             <div className="px-3 pb-4">
               <Button variant="outline" className="w-full" onClick={() => router.push("/login")}>Login</Button>

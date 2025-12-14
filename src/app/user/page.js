@@ -1,0 +1,1842 @@
+"use client"
+
+import { useEffect, useState, useRef } from "react"
+import { useRouter } from "next/navigation"
+import { auth, db } from "@/app/firebaseConfig"
+import { onAuthStateChanged, signOut } from "firebase/auth"
+import { doc, getDoc, collection, getDocs, addDoc, onSnapshot, setDoc } from "firebase/firestore"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Logo } from "@/components/logo"
+import Image from "next/image"
+import { Users, Bed, Maximize, Calendar, MessageSquare, X, Star, User, ChevronDown, LogOut, QrCode, Copy, Search, Home, Building2, Wrench, Sparkles, Settings, Moon, Sun } from "lucide-react"
+import { QRCodeSVG } from "qrcode.react"
+
+export default function UserPage() {
+  const [user, setUser] = useState(null)
+  const [userData, setUserData] = useState(null)
+  const [rooms, setRooms] = useState([])
+  const [cottages, setCottages] = useState([])
+  const [bookings, setBookings] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState("dashboard") // "dashboard", "accommodations", "bookings", "feedback"
+  const [showBookingModal, setShowBookingModal] = useState(false)
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false)
+  const [selectedAccommodation, setSelectedAccommodation] = useState(null)
+  const [bookingForm, setBookingForm] = useState({
+    checkIn: "",
+    checkOut: "",
+    quantity: 1,
+    adults: 1,
+    children: 0,
+    paymentMethod: "",
+    referenceNumber: "",
+    specialRequests: "",
+  })
+  const [generatedReferenceNumber, setGeneratedReferenceNumber] = useState("")
+  const [feedbackForm, setFeedbackForm] = useState({
+    rating: 5,
+    comment: "",
+  })
+  const [submittingBooking, setSubmittingBooking] = useState(false)
+  const [submittingFeedback, setSubmittingFeedback] = useState(false)
+  const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const profileMenuRef = useRef(null)
+  const [showProfileSettings, setShowProfileSettings] = useState(false)
+  const [profileName, setProfileName] = useState("")
+  const [updatingProfile, setUpdatingProfile] = useState(false)
+  const [activeSettingsTab, setActiveSettingsTab] = useState("profile") // "profile", "appearance"
+  const [darkMode, setDarkMode] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [filters, setFilters] = useState({
+    minPrice: "",
+    maxPrice: "",
+    minGuests: "",
+    accommodationType: "all", // "all", "room", "cottage"
+  })
+  const router = useRouter()
+  
+  // GCash mobile number
+  const gcashNumber = "09059689099"
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        router.push("/login")
+        return
+      }
+      setUser(u)
+      
+      // Check if user is superadmin - redirect to superadmin page
+      if (u.email === "superadmin@jopatsresort.com") {
+        router.push("/superadmin")
+        return
+      }
+      
+      // Check if user is admin - redirect to admin page
+      const isAdminByEmail = u.email === "admin@jopatsresort.com"
+      const userDoc = await getDoc(doc(db, "users", u.uid))
+      const isAdmin = isAdminByEmail || (userDoc.exists() && userDoc.data().isAdmin)
+      
+      if (isAdmin) {
+        router.push("/admin")
+        return
+      }
+      
+      // Load user data
+      if (userDoc.exists()) {
+        setUserData(userDoc.data())
+      }
+      
+      // Load rooms and cottages
+      await loadRooms()
+      await loadCottages()
+      
+      // Load user bookings
+      await loadBookings(u.uid)
+      
+      setLoading(false)
+    })
+
+    return () => unsub()
+  }, [router])
+
+  // Set up real-time listeners for rooms, cottages, and bookings
+  useEffect(() => {
+    if (!user) return
+
+    // Real-time listener for cottages
+    const cottagesUnsubscribe = onSnapshot(
+      collection(db, "cottages"),
+      (snapshot) => {
+        const allCottages = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+        setCottages(allCottages)
+        console.log("Cottages updated in real-time:", allCottages.length)
+      },
+      (error) => {
+        console.error("Error listening to cottages:", error)
+      }
+    )
+
+    // Real-time listener for rooms
+    const roomsUnsubscribe = onSnapshot(
+      collection(db, "rooms"),
+      (snapshot) => {
+        const allRooms = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+        setRooms(allRooms)
+        console.log("Rooms updated in real-time:", allRooms.length)
+      },
+      (error) => {
+        console.error("Error listening to rooms:", error)
+      }
+    )
+
+    // Real-time listener for all bookings (to check availability)
+    const bookingsUnsubscribe = onSnapshot(
+      collection(db, "bookings"),
+      (snapshot) => {
+        const allBookingsData = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+        setAllBookings(allBookingsData)
+        
+        // Update user bookings
+        const userId = user.uid
+        const userBookings = allBookingsData
+          .filter((b) => b.userId === userId || b.guestEmail === user?.email)
+          .sort((a, b) => {
+            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0
+            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0
+            return dateB - dateA
+          })
+        setBookings(userBookings)
+      },
+      (error) => {
+        console.error("Error listening to bookings:", error)
+      }
+    )
+
+    // Cleanup listeners on unmount
+    return () => {
+      cottagesUnsubscribe()
+      roomsUnsubscribe()
+      bookingsUnsubscribe()
+    }
+  }, [user])
+
+  // Close profile menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+        setShowProfileMenu(false)
+      }
+    }
+
+    if (showProfileMenu) {
+      document.addEventListener("mousedown", handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside)
+    }
+  }, [showProfileMenu])
+
+  const loadRooms = async () => {
+    try {
+      const roomsSnapshot = await getDocs(collection(db, "rooms"))
+      const allRooms = roomsSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+      setRooms(allRooms)
+    } catch (error) {
+      console.error("Error loading rooms:", error)
+    }
+  }
+
+  const loadCottages = async () => {
+    try {
+      const cottagesSnapshot = await getDocs(collection(db, "cottages"))
+      const allCottages = cottagesSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+      setCottages(allCottages)
+    } catch (error) {
+      console.error("Error loading cottages:", error)
+    }
+  }
+
+  const [allBookings, setAllBookings] = useState([]) // All bookings to check availability
+
+  const loadBookings = async (userId) => {
+    try {
+      // Fetch all bookings and filter/sort client-side to avoid index requirement
+      const allBookingsSnapshot = await getDocs(collection(db, "bookings"))
+      const allBookingsData = allBookingsSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+      
+      // Store all bookings for availability checking
+      setAllBookings(allBookingsData)
+      
+      // Filter user's bookings
+      const userBookings = allBookingsData
+        .filter((b) => b.userId === userId || b.guestEmail === user?.email)
+        .sort((a, b) => {
+          // Sort by createdAt descending (newest first)
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0
+          return dateB - dateA
+        })
+      setBookings(userBookings)
+    } catch (error) {
+      console.error("Error loading bookings:", error)
+      setBookings([])
+      setAllBookings([])
+    }
+  }
+
+  const generateReferenceNumber = () => {
+    const prefix = "JOPATS"
+    const timestamp = Date.now().toString().slice(-8)
+    const random = Math.floor(Math.random() * 1000).toString().padStart(3, "0")
+    return `${prefix}-${timestamp}-${random}`
+  }
+
+  const generatePaymentURL = (paymentMethod, amount, referenceNumber) => {
+    const totalAmount = parseFloat(amount).toFixed(2)
+    const merchantName = "Jopats Resort"
+    
+    switch (paymentMethod) {
+      case "gcash":
+        // GCash QR code - using phone number only for maximum compatibility
+        // When scanned with GCash app, it will open the send money screen with this number
+        // The amount and reference are displayed separately for user to enter
+        return gcashNumber
+      
+      case "paymaya":
+        // PayMaya payment URL format
+        const paymayaNumber = "09123456789" // TODO: Replace with your actual PayMaya number
+        return `paymaya://send?number=${paymayaNumber}&amount=${totalAmount}&reference=${encodeURIComponent(referenceNumber)}&merchant=${encodeURIComponent(merchantName)}`
+      
+      case "bank_transfer":
+        // For bank transfer, include account details
+        // TODO: Replace with your actual bank account details
+        return `banktransfer://details?amount=${totalAmount}&reference=${encodeURIComponent(referenceNumber)}&bank=JopatsResort&account=YOUR_ACCOUNT_NUMBER`
+      
+      default:
+        return referenceNumber
+    }
+  }
+
+  const calculateStayDuration = (checkInDate, checkOutDate) => {
+    if (!checkInDate || !checkOutDate) return 0
+    const checkIn = new Date(checkInDate)
+    const checkOut = new Date(checkOutDate)
+    const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24))
+    return nights
+  }
+
+  const calculateBookingTotal = () => {
+    if (!selectedAccommodation || !bookingForm.checkIn || !bookingForm.checkOut) return 0
+    const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
+    return selectedAccommodation.price * nights * (parseInt(bookingForm.quantity) || 1)
+  }
+
+  const handleOpenBooking = (accommodation, type) => {
+    setSelectedAccommodation({ ...accommodation, accommodationType: type })
+    const refNumber = generateReferenceNumber()
+    setGeneratedReferenceNumber(refNumber)
+    setShowBookingModal(true)
+    setBookingForm({
+      checkIn: "",
+      checkOut: "",
+      quantity: 1,
+      adults: 1,
+      children: 0,
+      paymentMethod: "",
+      referenceNumber: refNumber,
+      specialRequests: "",
+    })
+  }
+
+  const copyReferenceNumber = () => {
+    navigator.clipboard.writeText(generatedReferenceNumber || bookingForm.referenceNumber)
+    alert("Reference number copied to clipboard!")
+  }
+
+  const handleSubmitBooking = async (e) => {
+    e.preventDefault()
+    if (!user || !selectedAccommodation) return
+
+    if (!bookingForm.checkIn || !bookingForm.checkOut) {
+      alert("Please select check-in and check-out dates")
+      return
+    }
+
+    if (!bookingForm.paymentMethod) {
+      alert("Please select a payment method")
+      return
+    }
+
+    const checkIn = new Date(bookingForm.checkIn)
+    const checkOut = new Date(bookingForm.checkOut)
+    
+    if (checkOut <= checkIn) {
+      alert("Check-out date must be after check-in date")
+      return
+    }
+
+    if (parseInt(bookingForm.adults) < 1) {
+      alert("Please enter at least 1 adult")
+      return
+    }
+
+    setSubmittingBooking(true)
+    try {
+      const bookingData = {
+        accommodationType: selectedAccommodation.accommodationType,
+        accommodationId: selectedAccommodation.id,
+        userId: user.uid,
+        guestName: userData?.name || user.email,
+        guestEmail: user.email,
+        guestPhone: userData?.phone || "",
+        checkIn: bookingForm.checkIn,
+        checkOut: bookingForm.checkOut,
+        quantity: parseInt(bookingForm.quantity) || 1,
+        adults: parseInt(bookingForm.adults) || 1,
+        children: parseInt(bookingForm.children) || 0,
+        paymentMethod: bookingForm.paymentMethod,
+        referenceNumber: bookingForm.referenceNumber || generatedReferenceNumber,
+        specialRequests: bookingForm.specialRequests || "",
+        status: "pending",
+        price: selectedAccommodation.price,
+        createdAt: new Date().toISOString(),
+      }
+
+      await addDoc(collection(db, "bookings"), bookingData)
+      await loadBookings(user.uid)
+      alert("Booking submitted successfully! We'll confirm your reservation soon.")
+      setShowBookingModal(false)
+      setSelectedAccommodation(null)
+      const newRefNumber = generateReferenceNumber()
+      setGeneratedReferenceNumber(newRefNumber)
+      setBookingForm({
+        checkIn: "",
+        checkOut: "",
+        quantity: 1,
+        adults: 1,
+        children: 0,
+        paymentMethod: "",
+        referenceNumber: newRefNumber,
+        specialRequests: "",
+      })
+    } catch (error) {
+      console.error("Error submitting booking:", error)
+      alert("Failed to submit booking. Please try again.")
+    } finally {
+      setSubmittingBooking(false)
+    }
+  }
+
+  const handleSubmitFeedback = async (e) => {
+    e.preventDefault()
+    if (!user || !feedbackForm.comment.trim()) {
+      alert("Please enter your feedback")
+      return
+    }
+
+    setSubmittingFeedback(true)
+    try {
+      const feedbackData = {
+        name: userData?.name || user.email,
+        location: "",
+        rating: parseInt(feedbackForm.rating) || 5,
+        comment: feedbackForm.comment.trim(),
+        date: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        userId: user.uid,
+        userEmail: user.email,
+        createdAt: new Date().toISOString(),
+      }
+
+      await addDoc(collection(db, "testimonials"), feedbackData)
+      alert("Thank you for your feedback! We appreciate your input.")
+      setShowFeedbackModal(false)
+      setFeedbackForm({
+        rating: 5,
+        comment: "",
+      })
+    } catch (error) {
+      console.error("Error submitting feedback:", error)
+      alert("Failed to submit feedback. Please try again.")
+    } finally {
+      setSubmittingFeedback(false)
+    }
+  }
+
+  const calculateTotalPrice = (booking) => {
+    if (!booking.price || !booking.checkIn || !booking.checkOut) return 0
+    const checkIn = new Date(booking.checkIn)
+    const checkOut = new Date(booking.checkOut)
+    const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24))
+    return booking.price * nights * (booking.quantity || 1)
+  }
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case "confirmed":
+        return "bg-green-100 text-green-800"
+      case "pending":
+        return "bg-yellow-100 text-yellow-800"
+      case "cancelled":
+        return "bg-red-100 text-red-800"
+      case "completed":
+        return "bg-blue-100 text-blue-800"
+      default:
+        return "bg-gray-100 text-gray-800"
+    }
+  }
+
+  // Check if an accommodation is booked
+  const isAccommodationBooked = (accommodationId, accommodationType) => {
+    // Check if there's any confirmed or completed booking for this accommodation
+    const booked = allBookings.some((booking) => {
+      // Match accommodation ID and type
+      if (booking.accommodationId === accommodationId && 
+          booking.accommodationType === accommodationType) {
+        // Only consider confirmed or completed bookings as "booked"
+        // Pending bookings don't block availability yet
+        if (booking.status === "confirmed" || booking.status === "completed") {
+          return true
+        }
+      }
+      return false
+    })
+    return booked
+  }
+
+  // Filter rooms and cottages based on search query, filters, and availability
+  const filteredRooms = rooms.filter((room) => {
+    // Check if room is booked
+    if (isAccommodationBooked(room.id, "Room")) return false
+
+    // Filter out rooms that are in maintenance or cleaning
+    // Only show rooms with status "available" or no status (default to available)
+    if (room.status && room.status !== "available") {
+      return false
+    }
+
+    // Search query filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim()
+      const typeMatch = room.type?.toLowerCase().includes(query)
+      const descMatch = room.description?.toLowerCase().includes(query)
+      const featuresMatch = room.features?.some(f => f.toLowerCase().includes(query))
+      const priceMatch = room.price?.toString().includes(query)
+      if (!typeMatch && !descMatch && !featuresMatch && !priceMatch) return false
+    }
+
+    // Price filter
+    if (filters.minPrice && room.price < parseFloat(filters.minPrice)) return false
+    if (filters.maxPrice && room.price > parseFloat(filters.maxPrice)) return false
+
+    // Guests filter
+    if (filters.minGuests && room.guests < parseInt(filters.minGuests)) return false
+
+    // Accommodation type filter
+    if (filters.accommodationType === "cottage") return false
+
+    return true
+  })
+
+  const filteredCottages = cottages.filter((cottage) => {
+    // Check if cottage is booked
+    if (isAccommodationBooked(cottage.id, "Cottage")) return false
+
+    // Filter out cottages that are in maintenance or cleaning
+    // Only show cottages with status "available" or no status (default to available)
+    if (cottage.status && cottage.status !== "available") {
+      return false
+    }
+
+    // Search query filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim()
+      const typeMatch = cottage.type?.toLowerCase().includes(query)
+      const descMatch = cottage.description?.toLowerCase().includes(query)
+      const priceMatch = cottage.price?.toString().includes(query)
+      if (!typeMatch && !descMatch && !priceMatch) return false
+    }
+
+    // Price filter
+    if (filters.minPrice && cottage.price < parseFloat(filters.minPrice)) return false
+    if (filters.maxPrice && cottage.price > parseFloat(filters.maxPrice)) return false
+
+    // Guests filter
+    if (filters.minGuests && cottage.guests < parseInt(filters.minGuests)) return false
+
+    // Accommodation type filter
+    if (filters.accommodationType === "room") return false
+
+    return true
+  })
+
+  const clearFilters = () => {
+    setSearchQuery("")
+    setFilters({
+      minPrice: "",
+      maxPrice: "",
+      minGuests: "",
+      accommodationType: "all",
+    })
+  }
+
+  const hasActiveFilters = searchQuery.trim() || filters.minPrice || filters.maxPrice || filters.minGuests || filters.accommodationType !== "all"
+
+  // Initialize dark mode from localStorage
+  useEffect(() => {
+    const savedDarkMode = localStorage.getItem("darkMode") === "true"
+    setDarkMode(savedDarkMode)
+    if (savedDarkMode) {
+      document.documentElement.classList.add("dark")
+    } else {
+      document.documentElement.classList.remove("dark")
+    }
+  }, [])
+
+  const handleOpenProfileSettings = () => {
+    setProfileName(userData?.name || "")
+    setShowProfileSettings(true)
+    setShowProfileMenu(false)
+  }
+
+  const handleUpdateProfile = async () => {
+    if (!user || !profileName.trim()) {
+      alert("Please enter a valid name")
+      return
+    }
+
+    setUpdatingProfile(true)
+    try {
+      await setDoc(
+        doc(db, "users", user.uid),
+        { name: profileName.trim() },
+        { merge: true }
+      )
+      setUserData({ ...userData, name: profileName.trim() })
+      alert("Profile updated successfully!")
+      setShowProfileSettings(false)
+    } catch (error) {
+      console.error("Error updating profile:", error)
+      alert("Failed to update profile. Please try again.")
+    } finally {
+      setUpdatingProfile(false)
+    }
+  }
+
+  const handleToggleDarkMode = () => {
+    const newDarkMode = !darkMode
+    setDarkMode(newDarkMode)
+    localStorage.setItem("darkMode", newDarkMode.toString())
+    if (newDarkMode) {
+      document.documentElement.classList.add("dark")
+    } else {
+      document.documentElement.classList.remove("dark")
+    }
+  }
+
+  const handleSignOut = async () => {
+    await signOut(auth)
+    router.push("/")
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-lg">Loading...</div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <main className="min-h-screen">
+      {/* Header with Logo, Tabs, and Profile */}
+      <header className="fixed top-0 left-0 right-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b border-border">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          {/* Top Row: Logo and Profile */}
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center gap-4">
+              <Logo />
+            </div>
+            <div className="flex items-center gap-4">
+              {/* Profile Dropdown */}
+              <div className="relative" ref={profileMenuRef}>
+                <button
+                  onClick={() => setShowProfileMenu(!showProfileMenu)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-muted transition-colors"
+                >
+                  <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <User className="h-5 w-5 text-primary" />
+                  </div>
+                  <span className="text-sm font-medium hidden sm:block">{userData?.name || "User"}</span>
+                  <ChevronDown className={`h-4 w-4 transition-transform ${showProfileMenu ? "rotate-180" : ""}`} />
+                </button>
+
+                {/* Dropdown Menu */}
+                {showProfileMenu && (
+                  <div className="absolute right-0 mt-2 w-56 bg-card border border-border rounded-lg shadow-lg z-50">
+                    <div className="p-2">
+                      <div className="px-3 py-2 border-b border-border">
+                        <p className="text-sm font-semibold">{userData?.name || "User"}</p>
+                        <p className="text-xs text-muted-foreground">{user?.email}</p>
+                      </div>
+                      <button
+                        onClick={handleOpenProfileSettings}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted rounded-md transition-colors"
+                      >
+                        <Settings className="h-4 w-4" />
+                        <span>Profile Settings</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowProfileMenu(false)
+                          handleSignOut()
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted rounded-md transition-colors text-red-600 hover:text-red-700"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        <span>Sign Out</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          {/* Bottom Row: Navigation Tabs */}
+          <div className="flex gap-2 border-t border-border">
+            <Button
+              variant={activeTab === "dashboard" ? "default" : "ghost"}
+              onClick={() => setActiveTab("dashboard")}
+              className={`rounded-none border-b-2 h-12 ${
+                activeTab === "dashboard" 
+                  ? "border-primary" 
+                  : "border-transparent hover:border-muted-foreground/50"
+              }`}
+            >
+              <Home className="h-4 w-4 mr-2" />
+              Dashboard
+            </Button>
+            <Button
+              variant={activeTab === "accommodations" ? "default" : "ghost"}
+              onClick={() => setActiveTab("accommodations")}
+              className={`rounded-none border-b-2 h-12 ${
+                activeTab === "accommodations" 
+                  ? "border-primary" 
+                  : "border-transparent hover:border-muted-foreground/50"
+              }`}
+            >
+              Accommodations
+            </Button>
+            <Button
+              variant={activeTab === "bookings" ? "default" : "ghost"}
+              onClick={() => setActiveTab("bookings")}
+              className={`rounded-none border-b-2 h-12 ${
+                activeTab === "bookings" 
+                  ? "border-primary" 
+                  : "border-transparent hover:border-muted-foreground/50"
+              }`}
+            >
+              My Bookings ({bookings.length})
+            </Button>
+            <Button
+              variant={activeTab === "feedback" ? "default" : "ghost"}
+              onClick={() => setActiveTab("feedback")}
+              className={`rounded-none border-b-2 h-12 ${
+                activeTab === "feedback" 
+                  ? "border-primary" 
+                  : "border-transparent hover:border-muted-foreground/50"
+              }`}
+            >
+              Send Feedback
+            </Button>
+          </div>
+        </div>
+      </header>
+      <section className="py-24 bg-background min-h-screen pt-40">
+        <div className="max-w-7xl mx-auto px-4">
+          {/* Dashboard Tab */}
+          {activeTab === "dashboard" && (
+            <>
+              <div className="text-center mb-8">
+                <h2 className="text-3xl font-serif font-bold">Dashboard</h2>
+                <p className="text-muted-foreground">Overview of available accommodations</p>
+              </div>
+
+              {/* Statistics Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <Card className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-muted-foreground mb-1">Available Rooms</div>
+                      <div className="text-3xl font-bold">{filteredRooms.length}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {rooms.length - filteredRooms.length} booked
+                      </div>
+                    </div>
+                    <div className="h-12 w-12 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center">
+                      <Bed className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-muted-foreground mb-1">Available Cottages</div>
+                      <div className="text-3xl font-bold">{filteredCottages.length}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {cottages.length - filteredCottages.length} booked
+                      </div>
+                    </div>
+                    <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900 flex items-center justify-center">
+                      <Building2 className="h-6 w-6 text-green-600 dark:text-green-400" />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-muted-foreground mb-1">Total Available</div>
+                      <div className="text-3xl font-bold">{filteredRooms.length + filteredCottages.length}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {rooms.length + cottages.length} total
+                      </div>
+                    </div>
+                    <div className="h-12 w-12 rounded-full bg-purple-100 dark:bg-purple-900 flex items-center justify-center">
+                      <Home className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-muted-foreground mb-1">My Bookings</div>
+                      <div className="text-3xl font-bold">{bookings.length}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {bookings.filter(b => b.status === "completed").length} completed
+                      </div>
+                    </div>
+                    <div className="h-12 w-12 rounded-full bg-orange-100 dark:bg-orange-900 flex items-center justify-center">
+                      <Calendar className="h-6 w-6 text-orange-600 dark:text-orange-400" />
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              {/* Maintenance and Cleaning Status */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                {/* Rooms in Maintenance/Cleaning */}
+                <Card className="p-6">
+                  <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                    <Wrench className="h-5 w-5 text-orange-600" />
+                    Rooms Status
+                  </h3>
+                  <div className="space-y-3">
+                    {rooms.filter(r => r.status === "maintenance").length > 0 && (
+                      <div className="p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Wrench className="h-4 w-4 text-orange-600" />
+                            <span className="font-medium text-orange-800 dark:text-orange-300">Maintenance</span>
+                          </div>
+                          <span className="text-sm font-bold text-orange-700 dark:text-orange-400">
+                            {rooms.filter(r => r.status === "maintenance").length}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-orange-700 dark:text-orange-400">
+                          {rooms.filter(r => r.status === "maintenance").map(r => r.type).join(", ")}
+                        </div>
+                      </div>
+                    )}
+                    {rooms.filter(r => r.status === "cleaning").length > 0 && (
+                      <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="h-4 w-4 text-blue-600" />
+                            <span className="font-medium text-blue-800 dark:text-blue-300">Cleaning</span>
+                          </div>
+                          <span className="text-sm font-bold text-blue-700 dark:text-blue-400">
+                            {rooms.filter(r => r.status === "cleaning").length}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-blue-700 dark:text-blue-400">
+                          {rooms.filter(r => r.status === "cleaning").map(r => r.type).join(", ")}
+                        </div>
+                      </div>
+                    )}
+                    {rooms.filter(r => r.status === "maintenance" || r.status === "cleaning").length === 0 && (
+                      <p className="text-sm text-muted-foreground">All rooms are available</p>
+                    )}
+                  </div>
+                </Card>
+
+                {/* Cottages in Maintenance/Cleaning */}
+                <Card className="p-6">
+                  <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                    <Wrench className="h-5 w-5 text-orange-600" />
+                    Cottages Status
+                  </h3>
+                  <div className="space-y-3">
+                    {cottages.filter(c => c.status === "maintenance").length > 0 && (
+                      <div className="p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Wrench className="h-4 w-4 text-orange-600" />
+                            <span className="font-medium text-orange-800 dark:text-orange-300">Maintenance</span>
+                          </div>
+                          <span className="text-sm font-bold text-orange-700 dark:text-orange-400">
+                            {cottages.filter(c => c.status === "maintenance").length}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-orange-700 dark:text-orange-400">
+                          {cottages.filter(c => c.status === "maintenance").map(c => c.type).join(", ")}
+                        </div>
+                      </div>
+                    )}
+                    {cottages.filter(c => c.status === "cleaning").length > 0 && (
+                      <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="h-4 w-4 text-blue-600" />
+                            <span className="font-medium text-blue-800 dark:text-blue-300">Cleaning</span>
+                          </div>
+                          <span className="text-sm font-bold text-blue-700 dark:text-blue-400">
+                            {cottages.filter(c => c.status === "cleaning").length}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-blue-700 dark:text-blue-400">
+                          {cottages.filter(c => c.status === "cleaning").map(c => c.type).join(", ")}
+                        </div>
+                      </div>
+                    )}
+                    {cottages.filter(c => c.status === "maintenance" || c.status === "cleaning").length === 0 && (
+                      <p className="text-sm text-muted-foreground">All cottages are available</p>
+                    )}
+                  </div>
+                </Card>
+              </div>
+
+              {/* Quick View of Available Accommodations */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                {/* Available Rooms Preview */}
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-semibold flex items-center gap-2">
+                      <Bed className="h-5 w-5" />
+                      Available Rooms
+                    </h3>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setActiveTab("accommodations")}
+                    >
+                      View All
+                    </Button>
+                  </div>
+                  {filteredRooms.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No rooms available at the moment.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {filteredRooms.slice(0, 3).map((room) => (
+                        <div key={room.id} className="flex items-center gap-3 p-3 bg-muted rounded-lg">
+                          {room.image && (
+                            <img
+                              src={room.image}
+                              alt={room.type}
+                              className="w-16 h-16 object-cover rounded"
+                              onError={(e) => {
+                                e.target.src = "/room1.jpg"
+                              }}
+                            />
+                          )}
+                          <div className="flex-1">
+                            <div className="font-medium">{room.type}</div>
+                            <div className="text-sm text-muted-foreground">
+                              ₱{room.price}/night • {room.guests} Guests
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            onClick={() => handleOpenBooking(room, "Room")}
+                          >
+                            Book
+                          </Button>
+                        </div>
+                      ))}
+                      {filteredRooms.length > 3 && (
+                        <p className="text-sm text-muted-foreground text-center">
+                          +{filteredRooms.length - 3} more rooms available
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </Card>
+
+                {/* Available Cottages Preview */}
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-semibold flex items-center gap-2">
+                      <Building2 className="h-5 w-5" />
+                      Available Cottages
+                    </h3>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setActiveTab("accommodations")}
+                    >
+                      View All
+                    </Button>
+                  </div>
+                  {filteredCottages.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No cottages available at the moment.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {filteredCottages.slice(0, 3).map((cottage) => (
+                        <div key={cottage.id} className="flex items-center gap-3 p-3 bg-muted rounded-lg">
+                          {cottage.image && (
+                            <img
+                              src={cottage.image}
+                              alt={cottage.type}
+                              className="w-16 h-16 object-cover rounded"
+                              onError={(e) => {
+                                e.target.src = "/cottage.jpg"
+                              }}
+                            />
+                          )}
+                          <div className="flex-1">
+                            <div className="font-medium">{cottage.type}</div>
+                            <div className="text-sm text-muted-foreground">
+                              ₱{cottage.price} • {cottage.guests} Guests
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            onClick={() => handleOpenBooking(cottage, "Cottage")}
+                          >
+                            Book
+                          </Button>
+                        </div>
+                      ))}
+                      {filteredCottages.length > 3 && (
+                        <p className="text-sm text-muted-foreground text-center">
+                          +{filteredCottages.length - 3} more cottages available
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              </div>
+
+              {/* Quick Actions */}
+              <Card className="p-6">
+                <h3 className="text-xl font-semibold mb-4">Quick Actions</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <Button
+                    variant="outline"
+                    className="h-auto py-4 flex flex-col items-center gap-2"
+                    onClick={() => setActiveTab("accommodations")}
+                  >
+                    <Bed className="h-6 w-6" />
+                    <span>Browse All Accommodations</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-auto py-4 flex flex-col items-center gap-2"
+                    onClick={() => setActiveTab("bookings")}
+                  >
+                    <Calendar className="h-6 w-6" />
+                    <span>View My Bookings</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-auto py-4 flex flex-col items-center gap-2"
+                    onClick={() => setActiveTab("feedback")}
+                  >
+                    <MessageSquare className="h-6 w-6" />
+                    <span>Send Feedback</span>
+                  </Button>
+                </div>
+              </Card>
+            </>
+          )}
+
+          {/* Accommodations Tab */}
+          {activeTab === "accommodations" && (
+            <>
+              {/* Available Rooms and Cottages */}
+              {(rooms.length > 0 || cottages.length > 0) ? (
+                <div>
+                  <div className="text-center mb-8">
+                    <h2 className="text-3xl font-serif font-bold">Available Accommodations</h2>
+                    <p className="text-muted-foreground">Browse and book our rooms and cottages</p>
+                  </div>
+
+                  {/* Search Box and Filters */}
+                  <div className="mb-8">
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                      {/* Search Box */}
+                      <div className="lg:col-span-2">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                          <Input
+                            type="text"
+                            placeholder="Search rooms and cottages..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="pl-10 pr-4 py-6 text-base"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Filters */}
+                      <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                        {/* Accommodation Type Filter */}
+                        <select
+                          value={filters.accommodationType}
+                          onChange={(e) => setFilters({ ...filters, accommodationType: e.target.value })}
+                          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          <option value="all">All Types</option>
+                          <option value="room">Rooms Only</option>
+                          <option value="cottage">Cottages Only</option>
+                        </select>
+
+                        {/* Min Guests Filter */}
+                        <Input
+                          type="number"
+                          placeholder="Min Guests"
+                          value={filters.minGuests}
+                          onChange={(e) => setFilters({ ...filters, minGuests: e.target.value })}
+                          className="text-sm"
+                          min="1"
+                        />
+
+                        {/* Min Price Filter */}
+                        <Input
+                          type="number"
+                          placeholder="Min Price (₱)"
+                          value={filters.minPrice}
+                          onChange={(e) => setFilters({ ...filters, minPrice: e.target.value })}
+                          className="text-sm"
+                          min="0"
+                        />
+
+                        {/* Max Price Filter */}
+                        <Input
+                          type="number"
+                          placeholder="Max Price (₱)"
+                          value={filters.maxPrice}
+                          onChange={(e) => setFilters({ ...filters, maxPrice: e.target.value })}
+                          className="text-sm"
+                          min="0"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Clear Filters Button */}
+                    {hasActiveFilters && (
+                      <div className="mt-3 flex justify-end">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={clearFilters}
+                          className="text-xs"
+                        >
+                          Clear All Filters
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Rooms Section */}
+                  {filteredRooms.length > 0 && (
+                    <div className="mb-12">
+                      <h3 className="text-2xl font-serif font-bold mb-6">Rooms</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {filteredRooms.map((room) => (
+                      <Card key={room.id} className="overflow-hidden bg-card shadow-md hover:shadow-xl transition-all duration-300 flex flex-col">
+                        {/* Image Section */}
+                        <div className="relative aspect-[4/3] overflow-hidden">
+                          {room.image ? (
+                            <img
+                              src={room.image}
+                              alt={room.type}
+                              className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                              onError={(e) => {
+                                e.target.src = "/room1.jpg"
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-muted flex items-center justify-center">
+                              <span className="text-muted-foreground">No Image</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <CardHeader className="pb-3">
+                          <div className="flex justify-between items-start mb-3">
+                            <CardTitle className="text-2xl font-serif font-bold text-foreground">
+                              {room.type}
+                            </CardTitle>
+                            <div className="text-right">
+                              <span className="text-2xl font-bold text-foreground">
+                                ₱{room.price}
+                              </span>
+                              <span className="text-sm text-muted-foreground block">/night</span>
+                            </div>
+                          </div>
+                          {room.description && (
+                            <CardDescription className="text-base text-muted-foreground text-pretty leading-relaxed mt-2">
+                              {room.description}
+                            </CardDescription>
+                          )}
+                        </CardHeader>
+
+                        <CardContent className="flex-1 flex flex-col">
+                          {/* Key Details */}
+                          <div className="flex gap-6 mb-5 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <Users className="h-4 w-4" />
+                              <span>{room.guests} Guests</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Bed className="h-4 w-4" />
+                              <span>
+                                {room.beds} {room.beds === 1 ? "Bed" : "Beds"}
+                              </span>
+                            </div>
+                            {room.size && (
+                              <div className="flex items-center gap-2">
+                                <Maximize className="h-4 w-4" />
+                                <span>{room.size}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Features Tags */}
+                          {room.features && room.features.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mb-4">
+                              {room.features.map((feature, idx) => (
+                                <span 
+                                  key={idx} 
+                                  className="px-3 py-1.5 bg-muted text-muted-foreground text-xs font-medium rounded-full"
+                                >
+                                  {feature}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+
+                        <CardFooter className="pt-0">
+                          <Button
+                            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-medium py-6 text-base rounded-lg transition-colors"
+                            onClick={() => handleOpenBooking(room, "Room")}
+                          >
+                            <Calendar className="mr-2 h-4 w-4" />
+                            Book Now
+                          </Button>
+                        </CardFooter>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+                  )}
+
+                  {/* Cottages Section */}
+                  {filteredCottages.length > 0 && (
+                    <div>
+                      <h3 className="text-2xl font-serif font-bold mb-6">Cottages</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {filteredCottages.map((cottage) => (
+                      <Card key={cottage.id} className="overflow-hidden bg-card shadow-md hover:shadow-xl transition-all duration-300 flex flex-col">
+                        {/* Image Section */}
+                        <div className="relative aspect-[4/3] overflow-hidden">
+                          {cottage.image ? (
+                            <img
+                              src={cottage.image}
+                              alt={cottage.type}
+                              className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                              onError={(e) => {
+                                e.target.src = "/cottage.jpg"
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-muted flex items-center justify-center">
+                              <span className="text-muted-foreground">No Image</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <CardHeader className="pb-3">
+                          <div className="flex justify-between items-start mb-3">
+                            <CardTitle className="text-2xl font-serif font-bold text-foreground">
+                              {cottage.type}
+                            </CardTitle>
+                            <div className="text-right">
+                              <span className="text-2xl font-bold text-foreground">
+                                ₱{cottage.price}
+                              </span>
+                            </div>
+                          </div>
+                          {cottage.description && (
+                            <CardDescription className="text-base text-muted-foreground text-pretty leading-relaxed mt-2">
+                              {cottage.description}
+                            </CardDescription>
+                          )}
+                        </CardHeader>
+
+                        <CardContent className="flex-1 flex flex-col">
+                          {/* Key Details */}
+                          <div className="flex gap-6 mb-5 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <Users className="h-4 w-4" />
+                              <span>{cottage.guests} Guests</span>
+                            </div>
+                            {cottage.size && (
+                              <div className="flex items-center gap-2">
+                                <Maximize className="h-4 w-4" />
+                                <span>{cottage.size}</span>
+                              </div>
+                            )}
+                          </div>
+                        </CardContent>
+
+                        <CardFooter className="pt-0">
+                          <Button
+                            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-medium py-6 text-base rounded-lg transition-colors"
+                            onClick={() => handleOpenBooking(cottage, "Cottage")}
+                          >
+                            <Calendar className="mr-2 h-4 w-4" />
+                            Book Now
+                          </Button>
+                        </CardFooter>
+                        </Card>
+                      ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No Results Message */}
+                  {searchQuery.trim() && filteredRooms.length === 0 && filteredCottages.length === 0 && (
+                    <div className="text-center py-12">
+                      <Search className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
+                      <h3 className="text-xl font-semibold mb-2">No accommodations found</h3>
+                      <p className="text-muted-foreground mb-4">
+                        No rooms or cottages match your search for &quot;{searchQuery}&quot;
+                      </p>
+                      <Button variant="outline" onClick={() => setSearchQuery("")}>
+                        Clear Search
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Card className="p-12 text-center">
+                  <p className="text-muted-foreground mb-4">No accommodations available at the moment.</p>
+                  <Button variant="outline" onClick={() => router.push("/")}>
+                    Browse Home Page
+                  </Button>
+                </Card>
+              )}
+            </>
+          )}
+
+          {/* My Bookings Tab */}
+          {activeTab === "bookings" && (
+            <>
+              <div className="text-center mb-8">
+                <h2 className="text-3xl font-serif font-bold">My Bookings</h2>
+                <p className="text-muted-foreground">View and manage your reservations</p>
+              </div>
+              {bookings.length === 0 ? (
+                <Card className="p-12 text-center">
+                  <Calendar className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
+                  <h3 className="text-xl font-semibold mb-2">No bookings yet</h3>
+                  <p className="text-muted-foreground mb-6">Start exploring our accommodations and make your first booking!</p>
+                  <Button onClick={() => setActiveTab("accommodations")}>
+                    Browse Accommodations
+                  </Button>
+                </Card>
+              ) : (
+                <div className="grid gap-4">
+                  {bookings.map((booking) => (
+                    <Card key={booking.id} className="p-6">
+                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-3">
+                            <h3 className="text-xl font-semibold">{booking.accommodationType}</h3>
+                            <span className={`px-3 py-1 text-xs font-medium rounded-full ${getStatusColor(booking.status || "pending")}`}>
+                              {booking.status || "pending"}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                            <div>
+                              <span className="text-muted-foreground">Check-in: </span>
+                              <span className="font-medium">
+                                {booking.checkIn ? new Date(booking.checkIn).toLocaleDateString() : "N/A"}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Check-out: </span>
+                              <span className="font-medium">
+                                {booking.checkOut ? new Date(booking.checkOut).toLocaleDateString() : "N/A"}
+                              </span>
+                            </div>
+                            {booking.checkIn && booking.checkOut && (
+                              <div>
+                                <span className="text-muted-foreground">Duration: </span>
+                                <span className="font-medium">
+                                  {(() => {
+                                    const nights = calculateStayDuration(booking.checkIn, booking.checkOut)
+                                    return nights > 0 ? `${nights} ${nights === 1 ? "night" : "nights"}` : "N/A"
+                                  })()}
+                                </span>
+                              </div>
+                            )}
+                            <div>
+                              <span className="text-muted-foreground">Quantity: </span>
+                              <span className="font-medium">{booking.quantity || 1}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Guests: </span>
+                              <span className="font-medium">
+                                {booking.adults || 1} Adult{booking.adults !== 1 ? "s" : ""}
+                                {booking.children > 0 && `, ${booking.children} Child${booking.children !== 1 ? "ren" : ""}`}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Payment Method: </span>
+                              <span className="font-medium capitalize">
+                                {booking.paymentMethod 
+                                  ? booking.paymentMethod.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())
+                                  : "Not specified"}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Reference Number: </span>
+                              <span className="font-medium font-mono">
+                                {booking.referenceNumber || "N/A"}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Total Price: </span>
+                              <span className="font-medium text-green-600">₱{calculateTotalPrice(booking)}</span>
+                            </div>
+                          </div>
+                          {/* Show QR Code in booking details if digital payment */}
+                          {(booking.paymentMethod === "gcash" || 
+                            booking.paymentMethod === "paymaya" || 
+                            booking.paymentMethod === "bank_transfer") && 
+                            booking.referenceNumber && (
+                            <div className="mt-4 p-4 bg-muted rounded-lg">
+                              <div className="flex items-center gap-2 mb-3">
+                                <QrCode className="h-5 w-5 text-primary" />
+                                <h4 className="font-semibold text-sm">Payment QR Code</h4>
+                              </div>
+                              <div className="flex flex-col items-center gap-2">
+                                <div className="p-3 bg-white rounded-lg">
+                                  <QRCodeSVG
+                                    value={generatePaymentURL(
+                                      booking.paymentMethod,
+                                      calculateTotalPrice(booking),
+                                      booking.referenceNumber
+                                    )}
+                                    size={150}
+                                    level="H"
+                                    includeMargin={true}
+                                  />
+                                </div>
+                                <div className="text-center">
+                                  <p className="text-xs text-muted-foreground mb-1">
+                                    Amount: <span className="font-semibold text-green-600">₱{calculateTotalPrice(booking).toFixed(2)}</span>
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Reference: <span className="font-mono font-semibold">{booking.referenceNumber}</span>
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {booking.specialRequests && (
+                            <div className="mt-3 p-3 bg-muted rounded">
+                              <span className="text-sm text-muted-foreground">Special Requests: </span>
+                              <span className="text-sm">{booking.specialRequests}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Send Feedback Tab */}
+          {activeTab === "feedback" && (
+            <>
+              <div className="text-center mb-8">
+                <h2 className="text-3xl font-serif font-bold">Share Your Experience</h2>
+                <p className="text-muted-foreground">We'd love to hear from you!</p>
+              </div>
+              <Card className="max-w-2xl mx-auto p-8">
+                <form onSubmit={handleSubmitFeedback} className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Rating</label>
+                    <div className="flex gap-2">
+                      {[1, 2, 3, 4, 5].map((rating) => (
+                        <button
+                          key={rating}
+                          type="button"
+                          onClick={() => setFeedbackForm({ ...feedbackForm, rating })}
+                          className={`p-2 rounded transition-colors ${
+                            feedbackForm.rating >= rating
+                              ? "text-yellow-500"
+                              : "text-muted-foreground hover:text-yellow-400"
+                          }`}
+                        >
+                          <Star
+                            className={`h-6 w-6 ${
+                              feedbackForm.rating >= rating ? "fill-current" : ""
+                            }`}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {feedbackForm.rating} out of 5 stars
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Your Feedback *</label>
+                    <Textarea
+                      value={feedbackForm.comment}
+                      onChange={(e) => setFeedbackForm({ ...feedbackForm, comment: e.target.value })}
+                      placeholder="Tell us about your experience at Jopats Resort..."
+                      rows={6}
+                      required
+                    />
+                  </div>
+                  <Button type="submit" className="w-full" disabled={submittingFeedback}>
+                    {submittingFeedback ? "Submitting..." : "Submit Feedback"}
+                  </Button>
+                </form>
+              </Card>
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* Booking Modal */}
+      {showBookingModal && selectedAccommodation && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <h2 className="text-xl font-semibold">Book {selectedAccommodation.type}</h2>
+              <button
+                onClick={() => {
+                  setShowBookingModal(false)
+                  setSelectedAccommodation(null)
+                }}
+                className="p-1 hover:bg-muted rounded-md transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </CardHeader>
+            <CardContent>
+              <div className="mb-6 p-4 bg-muted rounded-lg">
+                <div className="flex justify-between items-start mb-2">
+                  <div>
+                    <h3 className="font-semibold text-lg">{selectedAccommodation.type}</h3>
+                    <p className="text-sm text-muted-foreground">₱{selectedAccommodation.price}/night</p>
+                  </div>
+                </div>
+                {selectedAccommodation.description && (
+                  <p className="text-sm text-muted-foreground mt-2">{selectedAccommodation.description}</p>
+                )}
+              </div>
+              <form onSubmit={handleSubmitBooking} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Check-in Date *</label>
+                    <Input
+                      type="date"
+                      value={bookingForm.checkIn}
+                      onChange={(e) => setBookingForm({ ...bookingForm, checkIn: e.target.value })}
+                      min={new Date().toISOString().split("T")[0]}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Check-out Date *</label>
+                    <Input
+                      type="date"
+                      value={bookingForm.checkOut}
+                      onChange={(e) => setBookingForm({ ...bookingForm, checkOut: e.target.value })}
+                      min={bookingForm.checkIn || new Date().toISOString().split("T")[0]}
+                      required
+                    />
+                    {bookingForm.checkIn && bookingForm.checkOut && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {(() => {
+                          const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
+                          if (nights <= 0) return "Check-out must be after check-in"
+                          return `Stay duration: ${nights} ${nights === 1 ? "night" : "nights"}`
+                        })()}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Quantity *</label>
+                    <Input
+                      type="number"
+                      min="1"
+                      value={bookingForm.quantity}
+                      onChange={(e) => setBookingForm({ ...bookingForm, quantity: e.target.value })}
+                      required
+                    />
+                  </div>
+                  {bookingForm.checkIn && bookingForm.checkOut && (
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Total Price</label>
+                      <div className="text-2xl font-bold text-green-600">
+                        ₱{calculateBookingTotal()}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {(() => {
+                          const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
+                          return `${nights} ${nights === 1 ? "night" : "nights"} × ₱${selectedAccommodation.price} × ${bookingForm.quantity || 1} ${(bookingForm.quantity || 1) === 1 ? "unit" : "units"}`
+                        })()}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Adults *</label>
+                    <Input
+                      type="number"
+                      min="1"
+                      value={bookingForm.adults}
+                      onChange={(e) => setBookingForm({ ...bookingForm, adults: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Children</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={bookingForm.children}
+                      onChange={(e) => setBookingForm({ ...bookingForm, children: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Ages 0-17</p>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Payment Method *</label>
+                  <select
+                    value={bookingForm.paymentMethod}
+                    onChange={(e) => setBookingForm({ ...bookingForm, paymentMethod: e.target.value })}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    required
+                  >
+                    <option value="">Select payment method</option>
+                    <option value="cash">Cash</option>
+                    <option value="credit_card">Credit Card</option>
+                    <option value="debit_card">Debit Card</option>
+                    <option value="gcash">GCash</option>
+                    <option value="paymaya">PayMaya</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                  </select>
+                </div>
+                
+                {/* Reference Number */}
+                <div>
+                  <label className="block text-sm font-medium mb-2">Reference Number</label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="text"
+                      value={bookingForm.referenceNumber || generatedReferenceNumber}
+                      onChange={(e) => setBookingForm({ ...bookingForm, referenceNumber: e.target.value })}
+                      placeholder="Auto-generated reference number"
+                      readOnly
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={copyReferenceNumber}
+                      className="px-3"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Use this reference number for payment</p>
+                </div>
+
+                {/* QR Code for Digital Payment Methods */}
+                {(bookingForm.paymentMethod === "gcash" || 
+                  bookingForm.paymentMethod === "paymaya" || 
+                  bookingForm.paymentMethod === "bank_transfer") && (
+                  <div className="p-4 bg-muted rounded-lg">
+                    <div className="flex items-center gap-2 mb-3">
+                      <QrCode className="h-5 w-5 text-primary" />
+                      <h3 className="font-semibold">Payment QR Code</h3>
+                    </div>
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="p-4 bg-white rounded-lg">
+                        <QRCodeSVG
+                          value={generatePaymentURL(
+                            bookingForm.paymentMethod,
+                            calculateBookingTotal(),
+                            bookingForm.referenceNumber || generatedReferenceNumber
+                          )}
+                          size={200}
+                          level="H"
+                          includeMargin={true}
+                        />
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm text-muted-foreground mb-2">
+                          Scan this QR code to pay via {bookingForm.paymentMethod === "gcash" ? "GCash" : bookingForm.paymentMethod === "paymaya" ? "PayMaya" : "Bank Transfer"}
+                        </p>
+                        <p className="text-xs text-muted-foreground mb-1">
+                          Amount: <span className="font-semibold text-green-600">₱{calculateBookingTotal().toFixed(2)}</span>
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Reference: <span className="font-mono font-semibold">{bookingForm.referenceNumber || generatedReferenceNumber}</span>
+                        </p>
+                        {bookingForm.paymentMethod === "gcash" && (
+                          <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-950 rounded text-xs">
+                            <p className="text-muted-foreground">
+                              <strong>Instructions:</strong> Scan this QR code with GCash app. 
+                              Enter amount: <strong>₱{calculateBookingTotal().toFixed(2)}</strong> 
+                              and send to: <strong>{gcashNumber}</strong>
+                            </p>
+                            <p className="text-muted-foreground mt-1">
+                              Reference: <strong>{bookingForm.referenceNumber || generatedReferenceNumber}</strong>
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium mb-2">Special Requests</label>
+                  <Textarea
+                    value={bookingForm.specialRequests}
+                    onChange={(e) => setBookingForm({ ...bookingForm, specialRequests: e.target.value })}
+                    placeholder="Any special requests or notes..."
+                    rows={3}
+                  />
+                </div>
+                <div className="flex gap-2 justify-end pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setShowBookingModal(false)
+                      setSelectedAccommodation(null)
+                    }}
+                    disabled={submittingBooking}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={submittingBooking}>
+                    {submittingBooking ? "Submitting..." : "Confirm Booking"}
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Profile Settings Modal */}
+      {showProfileSettings && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                  <User className="h-5 w-5 text-primary" />
+                </div>
+                <h2 className="text-xl font-semibold">Profile Settings</h2>
+              </div>
+              <button
+                onClick={() => {
+                  setShowProfileSettings(false)
+                  setActiveSettingsTab("profile")
+                }}
+                className="p-1 hover:bg-muted rounded-md transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </CardHeader>
+            <CardContent>
+              {/* Settings Tabs */}
+              <div className="flex gap-2 mb-6 border-b">
+                <button
+                  onClick={() => setActiveSettingsTab("profile")}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    activeSettingsTab === "profile"
+                      ? "border-b-2 border-primary text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Profile
+                </button>
+                <button
+                  onClick={() => setActiveSettingsTab("appearance")}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    activeSettingsTab === "appearance"
+                      ? "border-b-2 border-primary text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Appearance
+                </button>
+              </div>
+
+              {/* Profile Tab */}
+              {activeSettingsTab === "profile" && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Name</label>
+                    <Input
+                      type="text"
+                      value={profileName}
+                      onChange={(e) => setProfileName(e.target.value)}
+                      placeholder="Enter your name"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Email</label>
+                    <Input
+                      type="email"
+                      value={user?.email || ""}
+                      disabled
+                      className="bg-muted"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Email cannot be changed</p>
+                  </div>
+                  <div className="flex gap-2 justify-end pt-4">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setShowProfileSettings(false)
+                        setActiveSettingsTab("profile")
+                      }}
+                      disabled={updatingProfile}
+                    >
+                      Cancel
+                    </Button>
+                    <Button onClick={handleUpdateProfile} disabled={updatingProfile}>
+                      {updatingProfile ? "Updating..." : "Update Profile"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Appearance Tab */}
+              {activeSettingsTab === "appearance" && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 border rounded-lg">
+                    <div className="flex items-center gap-3">
+                      {darkMode ? (
+                        <Moon className="h-5 w-5 text-primary" />
+                      ) : (
+                        <Sun className="h-5 w-5 text-primary" />
+                      )}
+                      <div>
+                        <p className="font-medium">Dark Mode</p>
+                        <p className="text-sm text-muted-foreground">
+                          {darkMode ? "Dark theme is enabled" : "Light theme is enabled"}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleToggleDarkMode}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        darkMode ? "bg-primary" : "bg-muted"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          darkMode ? "translate-x-6" : "translate-x-1"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <div className="flex gap-2 justify-end pt-4">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setShowProfileSettings(false)
+                        setActiveSettingsTab("profile")
+                      }}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </main>
+  )
+}

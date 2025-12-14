@@ -1,7 +1,13 @@
+"use client"
+
+import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Star } from "lucide-react"
+import { db } from "@/app/firebaseConfig"
+import { collection, getDocs, query, orderBy, limit, onSnapshot } from "firebase/firestore"
 
-const testimonials = [
+// Fallback static testimonials
+const staticTestimonials = [
   {
     name: "Sarah Johnson",
     location: "California, USA",
@@ -37,6 +43,57 @@ const testimonials = [
 ]
 
 export function Feedback() {
+  const [testimonials, setTestimonials] = useState(staticTestimonials)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    // Set up real-time listener for testimonials
+    const testimonialsQuery = query(
+      collection(db, "testimonials"),
+      orderBy("createdAt", "desc"),
+      limit(20) // Limit to 20 most recent testimonials
+    )
+
+    const unsubscribe = onSnapshot(
+      testimonialsQuery,
+      (snapshot) => {
+        const firebaseTestimonials = snapshot.docs.map((d) => {
+          const data = d.data()
+          return {
+            id: d.id,
+            name: data.name || "Guest",
+            location: data.location || "",
+            rating: data.rating || 5,
+            comment: data.comment || "",
+            date: data.date || (data.createdAt ? new Date(data.createdAt).toLocaleDateString("en-US", { month: "long", year: "numeric" }) : ""),
+          }
+        })
+
+        // If we have Firebase testimonials, use them; otherwise use static ones
+        if (firebaseTestimonials.length > 0) {
+          setTestimonials(firebaseTestimonials)
+        } else {
+          setTestimonials(staticTestimonials)
+        }
+        setLoading(false)
+      },
+      (error) => {
+        console.error("Error loading testimonials:", error)
+        // Fallback to static testimonials on error
+        setTestimonials(staticTestimonials)
+        setLoading(false)
+      }
+    )
+
+    // Cleanup listener on unmount
+    return () => unsubscribe()
+  }, [])
+
+  // Calculate average rating
+  const averageRating = testimonials.length > 0
+    ? (testimonials.reduce((sum, t) => sum + (t.rating || 5), 0) / testimonials.length).toFixed(1)
+    : "5.0"
+
   return (
     <section id="testimonials" className="py-24 bg-background">
       <div className="container mx-auto px-4">
@@ -47,39 +104,51 @@ export function Feedback() {
           </p>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-8 max-w-6xl mx-auto">
-          {testimonials.map((testimonial, index) => (
-            <Card key={index} className="p-8 bg-card border-accent/20 hover:border-accent/40 transition-colors">
-              <div className="flex gap-1 mb-4">
-                {[...Array(testimonial.rating)].map((_, i) => (
-                  <Star key={i} className="w-5 h-5 fill-accent text-accent" />
-                ))}
-              </div>
+        {loading ? (
+          <div className="text-center py-12">
+            <p className="text-muted-foreground">Loading testimonials...</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid md:grid-cols-2 gap-8 max-w-6xl mx-auto">
+              {testimonials.map((testimonial, index) => (
+                <Card key={testimonial.id || index} className="p-8 bg-card border-accent/20 hover:border-accent/40 transition-colors">
+                  <div className="flex gap-1 mb-4">
+                    {[...Array(testimonial.rating || 5)].map((_, i) => (
+                      <Star key={i} className="w-5 h-5 fill-accent text-accent" />
+                    ))}
+                  </div>
 
-              <p className="text-foreground mb-6 leading-relaxed">&ldquo;{testimonial.comment}&rdquo;</p>
+                  <p className="text-foreground mb-6 leading-relaxed">&ldquo;{testimonial.comment}&rdquo;</p>
 
-              <div className="flex items-center justify-between pt-4 border-t border-border">
-                <div>
-                  <p className="font-semibold text-foreground">{testimonial.name}</p>
-                  <p className="text-sm text-muted-foreground">{testimonial.location}</p>
-                </div>
-                <p className="text-sm text-muted-foreground">{testimonial.date}</p>
-              </div>
-            </Card>
-          ))}
-        </div>
-
-        <div className="text-center mt-12">
-          <div className="inline-flex items-center gap-2 text-primary">
-            <div className="flex">
-              {[...Array(5)].map((_, i) => (
-                <Star key={i} className="w-6 h-6 fill-accent text-accent" />
+                  <div className="flex items-center justify-between pt-4 border-t border-border">
+                    <div>
+                      <p className="font-semibold text-foreground">{testimonial.name}</p>
+                      {testimonial.location && (
+                        <p className="text-sm text-muted-foreground">{testimonial.location}</p>
+                      )}
+                    </div>
+                    {testimonial.date && (
+                      <p className="text-sm text-muted-foreground">{testimonial.date}</p>
+                    )}
+                  </div>
+                </Card>
               ))}
             </div>
-            <span className="text-2xl font-bold">5.0</span>
-            <span className="text-muted-foreground">out of 5 based on 200+ reviews</span>
-          </div>
-        </div>
+
+            <div className="text-center mt-12">
+              <div className="inline-flex items-center gap-2 text-primary">
+                <div className="flex">
+                  {[...Array(5)].map((_, i) => (
+                    <Star key={i} className="w-6 h-6 fill-accent text-accent" />
+                  ))}
+                </div>
+                <span className="text-2xl font-bold">{averageRating}</span>
+                <span className="text-muted-foreground">out of 5 based on {testimonials.length}+ reviews</span>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </section>
   )

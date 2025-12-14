@@ -1,5 +1,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { GlobalLoading } from "@/components/global-loading";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -39,6 +40,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className={`font-sans antialiased`}>
+        <GlobalLoading />
         {children}
       </body>
     </html>
