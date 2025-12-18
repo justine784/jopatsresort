@@ -833,16 +833,11 @@ export default function AdminPage() {
   }
 
   const calculateTotalPrice = (booking) => {
-    const prices = {
-      "Deluxe Room": 150,
-      "Family Suite": 250,
-      "Cottage": 350,
-    }
-    const pricePerNight = prices[booking.accommodationType] || 0
+    if (!booking.price || !booking.checkIn || !booking.checkOut) return 0
     const checkIn = new Date(booking.checkIn)
     const checkOut = new Date(booking.checkOut)
     const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24))
-    return pricePerNight * nights * booking.quantity
+    return booking.price * nights
   }
 
   if (loading) return <div className="p-8">Loading...</div>
@@ -1702,6 +1697,20 @@ export default function AdminPage() {
                             <div className="mt-3 p-3 bg-muted rounded">
                               <span className="text-sm text-muted-foreground">Special Requests: </span>
                               <span className="text-sm">{booking.specialRequests}</span>
+                            </div>
+                          )}
+                          {/* Payment Proof for GCash */}
+                          {booking.paymentMethod === "gcash" && booking.paymentProof && (
+                            <div className="mt-3 p-3 bg-muted rounded">
+                              <span className="text-sm font-medium block mb-2">GCash Payment Proof:</span>
+                              <a href={booking.paymentProof} target="_blank" rel="noopener noreferrer">
+                                <img
+                                  src={booking.paymentProof}
+                                  alt="Payment proof"
+                                  className="max-h-40 rounded-lg border border-border hover:opacity-80 transition-opacity"
+                                />
+                              </a>
+                              <p className="text-xs text-muted-foreground mt-1">Click to view full image</p>
                             </div>
                           )}
                         </div>

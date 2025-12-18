@@ -2,17 +2,17 @@
 
 import { useEffect, useState, useRef } from "react"
 import { useRouter } from "next/navigation"
-import { auth, db } from "@/app/firebaseConfig"
+import { auth, db, storage } from "@/app/firebaseConfig"
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
 import { onAuthStateChanged, signOut } from "firebase/auth"
-import { doc, getDoc, collection, getDocs, addDoc, onSnapshot, setDoc } from "firebase/firestore"
+import { doc, getDoc, collection, getDocs, addDoc, onSnapshot, setDoc, updateDoc } from "firebase/firestore"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Logo } from "@/components/logo"
 import Image from "next/image"
-import { Users, Bed, Maximize, Calendar, MessageSquare, X, Star, User, ChevronDown, LogOut, QrCode, Copy, Search, Home, Building2, Wrench, Sparkles, Settings, Moon, Sun } from "lucide-react"
-import { QRCodeSVG } from "qrcode.react"
+import { Users, Bed, Maximize, Calendar, MessageSquare, X, Star, User, ChevronDown, LogOut, Copy, Search, Home, Building2, Wrench, Sparkles, Settings, Moon, Sun, MoreVertical, Printer, Edit, Upload } from "lucide-react"
 
 export default function UserPage() {
   const [user, setUser] = useState(null)
@@ -28,7 +28,6 @@ export default function UserPage() {
   const [bookingForm, setBookingForm] = useState({
     checkIn: "",
     checkOut: "",
-    quantity: 1,
     adults: 1,
     children: 0,
     paymentMethod: "",
@@ -50,6 +49,18 @@ export default function UserPage() {
   const [activeSettingsTab, setActiveSettingsTab] = useState("profile") // "profile", "appearance"
   const [darkMode, setDarkMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
+  const [openBookingMenu, setOpenBookingMenu] = useState(null)
+  const [editingBooking, setEditingBooking] = useState(null)
+  const [editBookingForm, setEditBookingForm] = useState({
+    checkIn: "",
+    checkOut: "",
+    adults: 1,
+    children: 0,
+    specialRequests: "",
+  })
+  const [paymentProofFile, setPaymentProofFile] = useState(null)
+  const [paymentProofPreview, setPaymentProofPreview] = useState(null)
+  const [uploadingPaymentProof, setUploadingPaymentProof] = useState(false)
   const [filters, setFilters] = useState({
     minPrice: "",
     maxPrice: "",
@@ -236,32 +247,6 @@ export default function UserPage() {
     return `${prefix}-${timestamp}-${random}`
   }
 
-  const generatePaymentURL = (paymentMethod, amount, referenceNumber) => {
-    const totalAmount = parseFloat(amount).toFixed(2)
-    const merchantName = "Jopats Resort"
-    
-    switch (paymentMethod) {
-      case "gcash":
-        // GCash QR code - using phone number only for maximum compatibility
-        // When scanned with GCash app, it will open the send money screen with this number
-        // The amount and reference are displayed separately for user to enter
-        return gcashNumber
-      
-      case "paymaya":
-        // PayMaya payment URL format
-        const paymayaNumber = "09123456789" // TODO: Replace with your actual PayMaya number
-        return `paymaya://send?number=${paymayaNumber}&amount=${totalAmount}&reference=${encodeURIComponent(referenceNumber)}&merchant=${encodeURIComponent(merchantName)}`
-      
-      case "bank_transfer":
-        // For bank transfer, include account details
-        // TODO: Replace with your actual bank account details
-        return `banktransfer://details?amount=${totalAmount}&reference=${encodeURIComponent(referenceNumber)}&bank=JopatsResort&account=YOUR_ACCOUNT_NUMBER`
-      
-      default:
-        return referenceNumber
-    }
-  }
-
   const calculateStayDuration = (checkInDate, checkOutDate) => {
     if (!checkInDate || !checkOutDate) return 0
     const checkIn = new Date(checkInDate)
@@ -273,7 +258,7 @@ export default function UserPage() {
   const calculateBookingTotal = () => {
     if (!selectedAccommodation || !bookingForm.checkIn || !bookingForm.checkOut) return 0
     const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
-    return selectedAccommodation.price * nights * (parseInt(bookingForm.quantity) || 1)
+    return selectedAccommodation.price * nights
   }
 
   const handleOpenBooking = (accommodation, type) => {
@@ -327,16 +312,23 @@ export default function UserPage() {
 
     setSubmittingBooking(true)
     try {
+      // Upload payment proof if GCash is selected
+      let paymentProofURL = null
+      if (bookingForm.paymentMethod === "gcash" && paymentProofFile) {
+        paymentProofURL = await uploadPaymentProof()
+      }
+
       const bookingData = {
         accommodationType: selectedAccommodation.accommodationType,
         accommodationId: selectedAccommodation.id,
+        accommodationName: selectedAccommodation.type,
+        roomNumber: selectedAccommodation.roomNumber || selectedAccommodation.cottageNumber || null,
         userId: user.uid,
         guestName: userData?.name || user.email,
         guestEmail: user.email,
         guestPhone: userData?.phone || "",
         checkIn: bookingForm.checkIn,
         checkOut: bookingForm.checkOut,
-        quantity: parseInt(bookingForm.quantity) || 1,
         adults: parseInt(bookingForm.adults) || 1,
         children: parseInt(bookingForm.children) || 0,
         paymentMethod: bookingForm.paymentMethod,
@@ -344,6 +336,7 @@ export default function UserPage() {
         specialRequests: bookingForm.specialRequests || "",
         status: "pending",
         price: selectedAccommodation.price,
+        paymentProof: paymentProofURL,
         createdAt: new Date().toISOString(),
       }
 
@@ -357,13 +350,14 @@ export default function UserPage() {
       setBookingForm({
         checkIn: "",
         checkOut: "",
-        quantity: 1,
         adults: 1,
         children: 0,
         paymentMethod: "",
         referenceNumber: newRefNumber,
         specialRequests: "",
       })
+      setPaymentProofFile(null)
+      setPaymentProofPreview(null)
     } catch (error) {
       console.error("Error submitting booking:", error)
       alert("Failed to submit booking. Please try again.")
@@ -412,7 +406,7 @@ export default function UserPage() {
     const checkIn = new Date(booking.checkIn)
     const checkOut = new Date(booking.checkOut)
     const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24))
-    return booking.price * nights * (booking.quantity || 1)
+    return booking.price * nights
   }
 
   const getStatusColor = (status) => {
@@ -581,6 +575,216 @@ export default function UserPage() {
   const handleSignOut = async () => {
     await signOut(auth)
     router.push("/")
+  }
+
+  const handlePaymentProofChange = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      setPaymentProofFile(file)
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setPaymentProofPreview(reader.result)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const uploadPaymentProof = async () => {
+    if (!paymentProofFile) return null
+    setUploadingPaymentProof(true)
+    try {
+      const timestamp = Date.now()
+      const storageRef = ref(storage, `payment-proofs/${user.uid}/${timestamp}-${paymentProofFile.name}`)
+      await uploadBytes(storageRef, paymentProofFile)
+      const downloadURL = await getDownloadURL(storageRef)
+      return downloadURL
+    } catch (error) {
+      console.error("Error uploading payment proof:", error)
+      return null
+    } finally {
+      setUploadingPaymentProof(false)
+    }
+  }
+
+  const handleEditBooking = (booking) => {
+    setEditingBooking(booking)
+    setEditBookingForm({
+      checkIn: booking.checkIn || "",
+      checkOut: booking.checkOut || "",
+      adults: booking.adults || 1,
+      children: booking.children || 0,
+      specialRequests: booking.specialRequests || "",
+    })
+    setOpenBookingMenu(null)
+  }
+
+  const handleUpdateBooking = async (e) => {
+    e.preventDefault()
+    if (!editingBooking) return
+
+    try {
+      const { updateDoc } = await import("firebase/firestore")
+      await updateDoc(doc(db, "bookings", editingBooking.id), {
+        checkIn: editBookingForm.checkIn,
+        checkOut: editBookingForm.checkOut,
+        adults: parseInt(editBookingForm.adults) || 1,
+        children: parseInt(editBookingForm.children) || 0,
+        specialRequests: editBookingForm.specialRequests,
+      })
+      alert("Booking updated successfully!")
+      setEditingBooking(null)
+      await loadBookings(user.uid)
+    } catch (error) {
+      console.error("Error updating booking:", error)
+      alert("Failed to update booking. Please try again.")
+    }
+  }
+
+  const handlePrintReceipt = (booking) => {
+    setOpenBookingMenu(null)
+    const totalPrice = calculateTotalPrice(booking)
+    const nights = calculateStayDuration(booking.checkIn, booking.checkOut)
+    
+    const printWindow = window.open("", "_blank")
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Payment Receipt - ${booking.referenceNumber}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; max-width: 600px; margin: 0 auto; }
+          .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 20px; }
+          .logo { font-size: 24px; font-weight: bold; color: #333; }
+          .receipt-title { font-size: 18px; color: #666; margin-top: 10px; }
+          .section { margin-bottom: 20px; }
+          .section-title { font-weight: bold; font-size: 14px; color: #333; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+          .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
+          .label { color: #666; }
+          .value { font-weight: 500; }
+          .total-row { font-size: 18px; font-weight: bold; background: #f5f5f5; padding: 15px; margin-top: 20px; }
+          .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 12px; }
+          .status { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+          .status-pending { background: #fef3c7; color: #92400e; }
+          .status-confirmed { background: #d1fae5; color: #065f46; }
+          .status-completed { background: #dbeafe; color: #1e40af; }
+          .status-cancelled { background: #fee2e2; color: #991b1b; }
+          @media print { body { padding: 20px; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="logo">JOPATS RESORT</div>
+          <div class="receipt-title">Payment Receipt</div>
+        </div>
+        
+        <div class="section">
+          <div class="section-title">Booking Information</div>
+          <div class="row">
+            <span class="label">Reference Number:</span>
+            <span class="value">${booking.referenceNumber || "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Booking Date:</span>
+            <span class="value">${booking.createdAt ? new Date(booking.createdAt).toLocaleDateString() : "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Status:</span>
+            <span class="value"><span class="status status-${booking.status || "pending"}">${(booking.status || "pending").toUpperCase()}</span></span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Guest Details</div>
+          <div class="row">
+            <span class="label">Guest Name:</span>
+            <span class="value">${booking.guestName || userData?.name || "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Email:</span>
+            <span class="value">${booking.guestEmail || user?.email || "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Guests:</span>
+            <span class="value">${booking.adults || 1} Adult${(booking.adults || 1) !== 1 ? "s" : ""}${booking.children > 0 ? `, ${booking.children} Child${booking.children !== 1 ? "ren" : ""}` : ""}</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Accommodation Details</div>
+          <div class="row">
+            <span class="label">Type:</span>
+            <span class="value">${booking.accommodationType || "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Room/Cottage Name:</span>
+            <span class="value">${booking.accommodationName || "N/A"}</span>
+          </div>
+          ${booking.roomNumber ? `
+          <div class="row">
+            <span class="label">${booking.accommodationType === "Room" ? "Room" : "Cottage"} Number:</span>
+            <span class="value">${booking.roomNumber}</span>
+          </div>
+          ` : ""}
+          <div class="row">
+            <span class="label">Check-in:</span>
+            <span class="value">${booking.checkIn ? new Date(booking.checkIn).toLocaleDateString() : "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Check-out:</span>
+            <span class="value">${booking.checkOut ? new Date(booking.checkOut).toLocaleDateString() : "N/A"}</span>
+          </div>
+          <div class="row">
+            <span class="label">Duration:</span>
+            <span class="value">${nights} ${nights === 1 ? "night" : "nights"}</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Payment Details</div>
+          <div class="row">
+            <span class="label">Payment Method:</span>
+            <span class="value">${booking.paymentMethod === "gcash" ? "GCash" : "Cash"}</span>
+          </div>
+          ${booking.paymentMethod === "gcash" ? `
+          <div class="row">
+            <span class="label">GCash Number:</span>
+            <span class="value">${gcashNumber}</span>
+          </div>
+          ` : ""}
+          <div class="row">
+            <span class="label">Rate per Night:</span>
+            <span class="value">₱${booking.price || 0}</span>
+          </div>
+          <div class="row">
+            <span class="label">Number of Nights:</span>
+            <span class="value">${nights}</span>
+          </div>
+        </div>
+
+        <div class="total-row">
+          <div class="row" style="border: none; margin: 0; padding: 0;">
+            <span>TOTAL AMOUNT:</span>
+            <span>₱${totalPrice.toLocaleString()}</span>
+          </div>
+        </div>
+
+        ${booking.specialRequests ? `
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">Special Requests</div>
+          <p style="color: #666; margin: 0;">${booking.specialRequests}</p>
+        </div>
+        ` : ""}
+
+        <div class="footer">
+          <p>Thank you for choosing Jopats Resort!</p>
+          <p>For inquiries, please contact us at support@jopatsresort.com</p>
+          <p>Printed on: ${new Date().toLocaleString()}</p>
+        </div>
+      </body>
+      </html>
+    `)
+    printWindow.document.close()
+    printWindow.print()
   }
 
   if (loading) {
@@ -1313,11 +1517,44 @@ export default function UserPage() {
                     <Card key={booking.id} className="p-6">
                       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                         <div className="flex-1">
-                          <div className="flex items-center gap-3 mb-3">
-                            <h3 className="text-xl font-semibold">{booking.accommodationType}</h3>
-                            <span className={`px-3 py-1 text-xs font-medium rounded-full ${getStatusColor(booking.status || "pending")}`}>
-                              {booking.status || "pending"}
-                            </span>
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                              <h3 className="text-xl font-semibold">
+                                {booking.accommodationName || booking.accommodationType}
+                                {booking.roomNumber && ` - ${booking.accommodationType === "Room" ? "Room" : "Cottage"} ${booking.roomNumber}`}
+                              </h3>
+                              <span className={`px-3 py-1 text-xs font-medium rounded-full ${getStatusColor(booking.status || "pending")}`}>
+                                {booking.status || "pending"}
+                              </span>
+                            </div>
+                            {/* 3-dot Menu */}
+                            <div className="relative">
+                              <button
+                                onClick={() => setOpenBookingMenu(openBookingMenu === booking.id ? null : booking.id)}
+                                className="p-2 hover:bg-muted rounded-md transition-colors"
+                              >
+                                <MoreVertical className="h-5 w-5" />
+                              </button>
+                              {openBookingMenu === booking.id && (
+                                <div className="absolute right-0 mt-1 w-48 bg-card border border-border rounded-lg shadow-lg z-10">
+                                  <button
+                                    onClick={() => handleEditBooking(booking)}
+                                    disabled={booking.status === "completed" || booking.status === "cancelled"}
+                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                    Edit Booking
+                                  </button>
+                                  <button
+                                    onClick={() => handlePrintReceipt(booking)}
+                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors"
+                                  >
+                                    <Printer className="h-4 w-4" />
+                                    Print Receipt
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                             <div>
@@ -1344,10 +1581,6 @@ export default function UserPage() {
                               </div>
                             )}
                             <div>
-                              <span className="text-muted-foreground">Quantity: </span>
-                              <span className="font-medium">{booking.quantity || 1}</span>
-                            </div>
-                            <div>
                               <span className="text-muted-foreground">Guests: </span>
                               <span className="font-medium">
                                 {booking.adults || 1} Adult{booking.adults !== 1 ? "s" : ""}
@@ -1373,38 +1606,21 @@ export default function UserPage() {
                               <span className="font-medium text-green-600">₱{calculateTotalPrice(booking)}</span>
                             </div>
                           </div>
-                          {/* Show QR Code in booking details if digital payment */}
-                          {(booking.paymentMethod === "gcash" || 
-                            booking.paymentMethod === "paymaya" || 
-                            booking.paymentMethod === "bank_transfer") && 
-                            booking.referenceNumber && (
+                          {/* Show Payment Proof if GCash payment */}
+                          {booking.paymentMethod === "gcash" && booking.paymentProof && (
                             <div className="mt-4 p-4 bg-muted rounded-lg">
                               <div className="flex items-center gap-2 mb-3">
-                                <QrCode className="h-5 w-5 text-primary" />
-                                <h4 className="font-semibold text-sm">Payment QR Code</h4>
+                                <Upload className="h-5 w-5 text-primary" />
+                                <h4 className="font-semibold text-sm">Payment Proof</h4>
                               </div>
-                              <div className="flex flex-col items-center gap-2">
-                                <div className="p-3 bg-white rounded-lg">
-                                  <QRCodeSVG
-                                    value={generatePaymentURL(
-                                      booking.paymentMethod,
-                                      calculateTotalPrice(booking),
-                                      booking.referenceNumber
-                                    )}
-                                    size={150}
-                                    level="H"
-                                    includeMargin={true}
-                                  />
-                                </div>
-                                <div className="text-center">
-                                  <p className="text-xs text-muted-foreground mb-1">
-                                    Amount: <span className="font-semibold text-green-600">₱{calculateTotalPrice(booking).toFixed(2)}</span>
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    Reference: <span className="font-mono font-semibold">{booking.referenceNumber}</span>
-                                  </p>
-                                </div>
-                              </div>
+                              <a href={booking.paymentProof} target="_blank" rel="noopener noreferrer">
+                                <img
+                                  src={booking.paymentProof}
+                                  alt="Payment proof"
+                                  className="max-h-48 rounded-lg border border-border hover:opacity-80 transition-opacity"
+                                />
+                              </a>
+                              <p className="text-xs text-muted-foreground mt-2">Click to view full image</p>
                             </div>
                           )}
                           {booking.specialRequests && (
@@ -1536,16 +1752,6 @@ export default function UserPage() {
                       </p>
                     )}
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Quantity *</label>
-                    <Input
-                      type="number"
-                      min="1"
-                      value={bookingForm.quantity}
-                      onChange={(e) => setBookingForm({ ...bookingForm, quantity: e.target.value })}
-                      required
-                    />
-                  </div>
                   {bookingForm.checkIn && bookingForm.checkOut && (
                     <div>
                       <label className="block text-sm font-medium mb-2">Total Price</label>
@@ -1555,7 +1761,7 @@ export default function UserPage() {
                       <p className="text-xs text-muted-foreground mt-1">
                         {(() => {
                           const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
-                          return `${nights} ${nights === 1 ? "night" : "nights"} × ₱${selectedAccommodation.price} × ${bookingForm.quantity || 1} ${(bookingForm.quantity || 1) === 1 ? "unit" : "units"}`
+                          return `${nights} ${nights === 1 ? "night" : "nights"} × ₱${selectedAccommodation.price}`
                         })()}
                       </p>
                     </div>
@@ -1593,11 +1799,7 @@ export default function UserPage() {
                   >
                     <option value="">Select payment method</option>
                     <option value="cash">Cash</option>
-                    <option value="credit_card">Credit Card</option>
-                    <option value="debit_card">Debit Card</option>
                     <option value="gcash">GCash</option>
-                    <option value="paymaya">PayMaya</option>
-                    <option value="bank_transfer">Bank Transfer</option>
                   </select>
                 </div>
                 
@@ -1625,50 +1827,57 @@ export default function UserPage() {
                   <p className="text-xs text-muted-foreground mt-1">Use this reference number for payment</p>
                 </div>
 
-                {/* QR Code for Digital Payment Methods */}
-                {(bookingForm.paymentMethod === "gcash" || 
-                  bookingForm.paymentMethod === "paymaya" || 
-                  bookingForm.paymentMethod === "bank_transfer") && (
+                {/* GCash Payment Section */}
+                {bookingForm.paymentMethod === "gcash" && (
                   <div className="p-4 bg-muted rounded-lg">
                     <div className="flex items-center gap-2 mb-3">
-                      <QrCode className="h-5 w-5 text-primary" />
-                      <h3 className="font-semibold">Payment QR Code</h3>
+                      <Upload className="h-5 w-5 text-primary" />
+                      <h3 className="font-semibold">GCash Payment</h3>
                     </div>
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="p-4 bg-white rounded-lg">
-                        <QRCodeSVG
-                          value={generatePaymentURL(
-                            bookingForm.paymentMethod,
-                            calculateBookingTotal(),
-                            bookingForm.referenceNumber || generatedReferenceNumber
-                          )}
-                          size={200}
-                          level="H"
-                          includeMargin={true}
+                    <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 rounded-lg">
+                      <p className="text-sm text-muted-foreground mb-2">
+                        <strong>Send payment to:</strong> <span className="font-mono">{gcashNumber}</span>
+                      </p>
+                      <p className="text-sm text-muted-foreground mb-1">
+                        <strong>Amount:</strong> <span className="font-semibold text-green-600">₱{calculateBookingTotal().toFixed(2)}</span>
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        <strong>Reference:</strong> <span className="font-mono">{bookingForm.referenceNumber || generatedReferenceNumber}</span>
+                      </p>
+                    </div>
+
+                    {/* Upload Payment Proof */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Upload GCash Payment Screenshot *</label>
+                      <div className="flex flex-col gap-3">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handlePaymentProofChange}
+                          className="block w-full text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-primary file:text-primary-foreground hover:file:bg-primary/90 cursor-pointer"
                         />
-                      </div>
-                      <div className="text-center">
-                        <p className="text-sm text-muted-foreground mb-2">
-                          Scan this QR code to pay via {bookingForm.paymentMethod === "gcash" ? "GCash" : bookingForm.paymentMethod === "paymaya" ? "PayMaya" : "Bank Transfer"}
-                        </p>
-                        <p className="text-xs text-muted-foreground mb-1">
-                          Amount: <span className="font-semibold text-green-600">₱{calculateBookingTotal().toFixed(2)}</span>
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Reference: <span className="font-mono font-semibold">{bookingForm.referenceNumber || generatedReferenceNumber}</span>
-                        </p>
-                        {bookingForm.paymentMethod === "gcash" && (
-                          <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-950 rounded text-xs">
-                            <p className="text-muted-foreground">
-                              <strong>Instructions:</strong> Scan this QR code with GCash app. 
-                              Enter amount: <strong>₱{calculateBookingTotal().toFixed(2)}</strong> 
-                              and send to: <strong>{gcashNumber}</strong>
-                            </p>
-                            <p className="text-muted-foreground mt-1">
-                              Reference: <strong>{bookingForm.referenceNumber || generatedReferenceNumber}</strong>
-                            </p>
+                        {paymentProofPreview && (
+                          <div className="relative">
+                            <img
+                              src={paymentProofPreview}
+                              alt="Payment proof preview"
+                              className="max-h-48 rounded-lg border border-border"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPaymentProofFile(null)
+                                setPaymentProofPreview(null)
+                              }}
+                              className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded-full hover:bg-red-600"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
                           </div>
                         )}
+                        <p className="text-xs text-muted-foreground">
+                          Please upload a screenshot of your GCash payment confirmation
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -1694,8 +1903,88 @@ export default function UserPage() {
                   >
                     Cancel
                   </Button>
-                  <Button type="submit" disabled={submittingBooking}>
-                    {submittingBooking ? "Submitting..." : "Confirm Booking"}
+                  <Button type="submit" disabled={submittingBooking || uploadingPaymentProof || (bookingForm.paymentMethod === "gcash" && !paymentProofFile)}>
+                    {uploadingPaymentProof ? "Uploading..." : submittingBooking ? "Submitting..." : "Confirm Booking"}
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Edit Booking Modal */}
+      {editingBooking && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <h2 className="text-xl font-semibold">Edit Booking</h2>
+              <button
+                onClick={() => setEditingBooking(null)}
+                className="p-1 hover:bg-muted rounded-md transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleUpdateBooking} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Check-in Date</label>
+                    <Input
+                      type="date"
+                      value={editBookingForm.checkIn}
+                      onChange={(e) => setEditBookingForm({ ...editBookingForm, checkIn: e.target.value })}
+                      min={new Date().toISOString().split("T")[0]}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Check-out Date</label>
+                    <Input
+                      type="date"
+                      value={editBookingForm.checkOut}
+                      onChange={(e) => setEditBookingForm({ ...editBookingForm, checkOut: e.target.value })}
+                      min={editBookingForm.checkIn || new Date().toISOString().split("T")[0]}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Adults</label>
+                    <Input
+                      type="number"
+                      min="1"
+                      value={editBookingForm.adults}
+                      onChange={(e) => setEditBookingForm({ ...editBookingForm, adults: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Children</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={editBookingForm.children}
+                      onChange={(e) => setEditBookingForm({ ...editBookingForm, children: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Special Requests</label>
+                  <Textarea
+                    value={editBookingForm.specialRequests}
+                    onChange={(e) => setEditBookingForm({ ...editBookingForm, specialRequests: e.target.value })}
+                    rows={3}
+                  />
+                </div>
+                <div className="flex gap-2 justify-end pt-4">
+                  <Button type="button" variant="outline" onClick={() => setEditingBooking(null)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit">
+                    Update Booking
                   </Button>
                 </div>
               </form>

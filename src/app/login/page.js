@@ -6,7 +6,7 @@ import Link from "next/link"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Logo } from "@/components/logo"
-import { signInWithEmailAndPassword, signOut } from "firebase/auth"
+import { signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "firebase/auth"
 import { auth, db } from "@/app/firebaseConfig"
 import { doc, getDoc } from "firebase/firestore"
 
@@ -16,6 +16,12 @@ export default function LoginPage() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const [pageLoading, setPageLoading] = useState(true)
+  const [showForgotPassword, setShowForgotPassword] = useState(false)
+  const [resetEmail, setResetEmail] = useState("")
+  const [resetMessage, setResetMessage] = useState("")
+  const [resetError, setResetError] = useState("")
+  const [resetLoading, setResetLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
@@ -26,6 +32,28 @@ export default function LoginPage() {
 
     return () => clearTimeout(timer)
   }, [])
+
+  const handleForgotPassword = async (e) => {
+    e.preventDefault()
+    setResetError("")
+    setResetMessage("")
+    setResetLoading(true)
+    try {
+      await sendPasswordResetEmail(auth, resetEmail)
+      setResetMessage("Password reset email sent! Check your inbox.")
+      setResetEmail("")
+    } catch (err) {
+      if (err.code === "auth/user-not-found") {
+        setResetError("No account found with this email.")
+      } else if (err.code === "auth/invalid-email") {
+        setResetError("Invalid email address.")
+      } else {
+        setResetError("Failed to send reset email. Please try again.")
+      }
+    } finally {
+      setResetLoading(false)
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -131,15 +159,43 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="block text-sm font-semibold text-foreground">Password</label>
-              <Input 
-                value={password} 
-                onChange={(e) => setPassword(e.target.value)} 
-                type="password" 
-                placeholder="Enter your password"
-                className="h-12 text-base"
-                required
-              />
+              <div className="flex justify-between items-center">
+                <label className="block text-sm font-semibold text-foreground">Password</label>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPassword(true)}
+                  className="text-sm text-primary hover:text-primary/80 transition-colors"
+                >
+                  Forgot password?
+                </button>
+              </div>
+              <div className="relative">
+                <Input 
+                  value={password} 
+                  onChange={(e) => setPassword(e.target.value)} 
+                  type={showPassword ? "text" : "password"} 
+                  placeholder="Enter your password"
+                  className="h-12 text-base pr-12"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPassword ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
 
             <Button 
@@ -178,6 +234,61 @@ export default function LoginPage() {
           </p>
         </div>
       </div>
+
+      {/* Forgot Password Modal */}
+      {showForgotPassword && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card rounded-2xl shadow-2xl border border-border/50 p-8 w-full max-w-md">
+            <h2 className="text-2xl font-serif font-bold text-foreground mb-2">Reset Password</h2>
+            <p className="text-muted-foreground text-sm mb-6">Enter your email and we&apos;ll send you a link to reset your password.</p>
+            
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              {resetMessage && (
+                <div className="bg-green-500/10 border border-green-500/20 text-green-600 text-sm p-4 rounded-lg">
+                  {resetMessage}
+                </div>
+              )}
+              {resetError && (
+                <div className="bg-destructive/10 border border-destructive/20 text-destructive text-sm p-4 rounded-lg">
+                  {resetError}
+                </div>
+              )}
+              
+              <Input
+                value={resetEmail}
+                onChange={(e) => setResetEmail(e.target.value)}
+                type="email"
+                placeholder="Enter your email"
+                className="h-12 text-base"
+                required
+              />
+              
+              <div className="flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1 h-12"
+                  onClick={() => {
+                    setShowForgotPassword(false)
+                    setResetEmail("")
+                    setResetMessage("")
+                    setResetError("")
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  className="flex-1 h-12"
+                  disabled={resetLoading}
+                >
+                  {resetLoading ? "Sending..." : "Send Reset Link"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
