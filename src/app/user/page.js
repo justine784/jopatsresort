@@ -33,7 +33,11 @@ export default function UserPage() {
     paymentMethod: "",
     referenceNumber: "",
     specialRequests: "",
+    senior: false,
   })
+  const [seniorIdFile, setSeniorIdFile] = useState(null)
+  const [seniorIdPreview, setSeniorIdPreview] = useState(null)
+  const [uploadingSeniorId, setUploadingSeniorId] = useState(false)
   const [generatedReferenceNumber, setGeneratedReferenceNumber] = useState("")
   const [feedbackForm, setFeedbackForm] = useState({
     rating: 5,
@@ -43,6 +47,7 @@ export default function UserPage() {
   const [submittingFeedback, setSubmittingFeedback] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const profileMenuRef = useRef(null)
+  const bookingsRef = useRef(null)
   const [showProfileSettings, setShowProfileSettings] = useState(false)
   const [profileName, setProfileName] = useState("")
   const [updatingProfile, setUpdatingProfile] = useState(false)
@@ -175,7 +180,7 @@ export default function UserPage() {
     }
   }, [user])
 
-  // Close profile menu when clicking outside
+  // Close profile menu when clicking outside (supports pointer/touch for mobile)
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
@@ -184,13 +189,36 @@ export default function UserPage() {
     }
 
     if (showProfileMenu) {
-      document.addEventListener("mousedown", handleClickOutside)
+      document.addEventListener("pointerdown", handleClickOutside)
+      document.addEventListener("touchstart", handleClickOutside)
     }
 
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside)
+      document.removeEventListener("pointerdown", handleClickOutside)
+      document.removeEventListener("touchstart", handleClickOutside)
     }
   }, [showProfileMenu])
+
+  // Close open booking menu when tapping outside on mobile/desktop
+  useEffect(() => {
+    const handleOutsideBookingMenu = (event) => {
+      if (openBookingMenu !== null) {
+        if (bookingsRef.current && !bookingsRef.current.contains(event.target)) {
+          setOpenBookingMenu(null)
+        }
+      }
+    }
+
+    if (openBookingMenu !== null) {
+      document.addEventListener("pointerdown", handleOutsideBookingMenu)
+      document.addEventListener("touchstart", handleOutsideBookingMenu)
+    }
+
+    return () => {
+      document.removeEventListener("pointerdown", handleOutsideBookingMenu)
+      document.removeEventListener("touchstart", handleOutsideBookingMenu)
+    }
+  }, [openBookingMenu])
 
   const loadRooms = async () => {
     try {
@@ -258,7 +286,11 @@ export default function UserPage() {
   const calculateBookingTotal = () => {
     if (!selectedAccommodation || !bookingForm.checkIn || !bookingForm.checkOut) return 0
     const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
-    return selectedAccommodation.price * nights
+    const gross = selectedAccommodation.price * nights
+    const discountPercent = bookingForm.senior ? 10 : 0
+    const discountAmount = (gross * discountPercent) / 100
+    const final = gross - discountAmount
+    return Math.round(final * 100) / 100
   }
 
   const handleOpenBooking = (accommodation, type) => {
@@ -275,7 +307,14 @@ export default function UserPage() {
       paymentMethod: "",
       referenceNumber: refNumber,
       specialRequests: "",
+      senior: false,
     })
+
+    // Clear any previous uploaded files/previews to avoid unexpected controlled state
+    setPaymentProofFile(null)
+    setPaymentProofPreview(null)
+    setSeniorIdFile(null)
+    setSeniorIdPreview(null)
   }
 
   const copyReferenceNumber = () => {
@@ -297,6 +336,13 @@ export default function UserPage() {
       return
     }
 
+    // Prevent new bookings if the user has unpaid pending/confirmed bookings
+    const hasUnpaid = bookings.some(b => !b.paid && (b.status === "pending" || b.status === "confirmed"))
+    if (hasUnpaid) {
+      alert("You have unpaid bookings. Please complete payment for them before making a new booking.")
+      return
+    }
+
     const checkIn = new Date(bookingForm.checkIn)
     const checkOut = new Date(bookingForm.checkOut)
     
@@ -312,11 +358,35 @@ export default function UserPage() {
 
     setSubmittingBooking(true)
     try {
-      // Upload payment proof if GCash is selected
+      // Require payment proof for all bookings (enforce prepayment)
+      if (!paymentProofFile) {
+        alert("Please upload proof of payment to confirm your booking.")
+        setSubmittingBooking(false)
+        return
+      }
+
+      // Upload payment proof
       let paymentProofURL = null
-      if (bookingForm.paymentMethod === "gcash" && paymentProofFile) {
+      if (paymentProofFile) {
         paymentProofURL = await uploadPaymentProof()
       }
+
+      // Handle senior ID upload and discount
+      let seniorIdURL = null
+      let discountPercent = 0
+      const nights = calculateStayDuration(bookingForm.checkIn, bookingForm.checkOut)
+      const grossAmount = selectedAccommodation.price * nights
+      if (bookingForm.senior) {
+        if (!seniorIdFile) {
+          alert("Please upload your Senior Citizen ID to apply the discount.")
+          setSubmittingBooking(false)
+          return
+        }
+        seniorIdURL = await uploadSeniorId()
+        discountPercent = 10
+      }
+      const discountAmount = (grossAmount * discountPercent) / 100
+      const finalAmount = grossAmount - discountAmount
 
       const bookingData = {
         accommodationType: selectedAccommodation.accommodationType,
@@ -336,7 +406,13 @@ export default function UserPage() {
         specialRequests: bookingForm.specialRequests || "",
         status: "pending",
         price: selectedAccommodation.price,
+        grossAmount,
+        discountPercent,
+        discountAmount,
+        finalAmount,
+        seniorId: seniorIdURL,
         paymentProof: paymentProofURL,
+        paid: !!paymentProofURL,
         createdAt: new Date().toISOString(),
       }
 
@@ -355,9 +431,12 @@ export default function UserPage() {
         paymentMethod: "",
         referenceNumber: newRefNumber,
         specialRequests: "",
+        senior: false,
       })
       setPaymentProofFile(null)
       setPaymentProofPreview(null)
+      setSeniorIdFile(null)
+      setSeniorIdPreview(null)
     } catch (error) {
       console.error("Error submitting booking:", error)
       alert("Failed to submit booking. Please try again.")
@@ -402,7 +481,10 @@ export default function UserPage() {
   }
 
   const calculateTotalPrice = (booking) => {
-    if (!booking.price || !booking.checkIn || !booking.checkOut) return 0
+    if (!booking || !booking.checkIn || !booking.checkOut) return 0
+    // Use precomputed final amount if available (after discounts)
+    if (booking.finalAmount !== undefined && booking.finalAmount !== null) return booking.finalAmount
+    if (!booking.price) return 0
     const checkIn = new Date(booking.checkIn)
     const checkOut = new Date(booking.checkOut)
     const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24))
@@ -589,6 +671,35 @@ export default function UserPage() {
     }
   }
 
+  const handleSeniorIdChange = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      setSeniorIdFile(file)
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setSeniorIdPreview(reader.result)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const uploadSeniorId = async () => {
+    if (!seniorIdFile) return null
+    setUploadingSeniorId(true)
+    try {
+      const timestamp = Date.now()
+      const storageRef = ref(storage, `senior-ids/${user.uid}/${timestamp}-${seniorIdFile.name}`)
+      await uploadBytes(storageRef, seniorIdFile)
+      const downloadURL = await getDownloadURL(storageRef)
+      return downloadURL
+    } catch (error) {
+      console.error("Error uploading senior ID:", error)
+      return null
+    } finally {
+      setUploadingSeniorId(false)
+    }
+  }
+
   const uploadPaymentProof = async () => {
     if (!paymentProofFile) return null
     setUploadingPaymentProof(true)
@@ -759,6 +870,27 @@ export default function UserPage() {
             <span class="label">Number of Nights:</span>
             <span class="value">${nights}</span>
           </div>
+          ${booking.discountPercent && booking.discountPercent > 0 ? `
+          <div class="row">
+            <span class="label">Discount:</span>
+            <span class="value">${booking.discountPercent}% (−₱${booking.discountAmount?.toLocaleString() || '0'})</span>
+          </div>
+          <div class="row">
+            <span class="label">Amount After Discount:</span>
+            <span class="value">₱${booking.finalAmount?.toLocaleString() || totalPrice.toLocaleString()}</span>
+          </div>
+          ` : ""}
+
+          ${ (booking.status === "cancelled" || booking.status === "no-show") && booking.refundAmount ? `
+          <div class="row">
+            <span class="label">Refund Amount:</span>
+            <span class="value">₱${booking.refundAmount?.toLocaleString()}</span>
+          </div>
+          <div class="row">
+            <span class="label">Refund Reason:</span>
+            <span class="value">${booking.status === "cancelled" ? "Cancellation (10% fee)" : booking.status === "no-show" ? "No-show (30% fee)" : ""}</span>
+          </div>
+          ` : ""}
         </div>
 
         <div class="total-row">
@@ -785,6 +917,50 @@ export default function UserPage() {
     `)
     printWindow.document.close()
     printWindow.print()
+  }
+
+  // Cancel booking with 10% fee (refund = finalAmount * 0.9)
+  const handleCancelBooking = async (booking) => {
+    if (!confirm("Are you sure you want to cancel this booking? A 10% cancellation fee will be applied and the rest refunded.")) return
+    try {
+      const finalAmt = booking.finalAmount ?? calculateTotalPrice(booking)
+      const feePercent = 10
+      const refundAmount = Math.round((finalAmt * (1 - feePercent / 100)) * 100) / 100
+      await updateDoc(doc(db, "bookings", booking.id), {
+        status: "cancelled",
+        feePercent,
+        refundAmount,
+        refundProcessed: false,
+        cancelledAt: new Date().toISOString()
+      })
+      await loadBookings(user.uid)
+      alert(`Booking cancelled. Refund amount: ₱${refundAmount.toLocaleString()}`)
+    } catch (error) {
+      console.error("Error cancelling booking:", error)
+      alert("Failed to cancel booking. Please try again.")
+    }
+  }
+
+  // Mark No-Show with 30% fee (refund = finalAmount * 0.7)
+  const handleMarkNoShow = async (booking) => {
+    if (!confirm("Mark this booking as 'No-Show'? A 30% fee will be applied and the rest refunded.")) return
+    try {
+      const finalAmt = booking.finalAmount ?? calculateTotalPrice(booking)
+      const feePercent = 30
+      const refundAmount = Math.round((finalAmt * (1 - feePercent / 100)) * 100) / 100
+      await updateDoc(doc(db, "bookings", booking.id), {
+        status: "no-show",
+        feePercent,
+        refundAmount,
+        refundProcessed: false,
+        noShowAt: new Date().toISOString()
+      })
+      await loadBookings(user.uid)
+      alert(`Booking marked as No-Show. Refund amount: ₱${refundAmount.toLocaleString()}`)
+    } catch (error) {
+      console.error("Error marking no-show:", error)
+      alert("Failed to mark no-show. Please try again.")
+    }
   }
 
   if (loading) {
@@ -853,8 +1029,8 @@ export default function UserPage() {
             </div>
           </div>
           
-          {/* Bottom Row: Navigation Tabs */}
-          <div className="flex gap-2 border-t border-border">
+          {/* Bottom Row: Navigation Tabs (mobile only) */}
+          <div className="flex gap-2 border-t border-border md:hidden">
             <Button
               variant={activeTab === "dashboard" ? "default" : "ghost"}
               onClick={() => setActiveTab("dashboard")}
@@ -905,12 +1081,89 @@ export default function UserPage() {
       </header>
       <section className="py-24 bg-background min-h-screen pt-40">
         <div className="max-w-7xl mx-auto px-4">
+          <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-6">
+            <aside className="hidden md:flex flex-col gap-4 p-4 bg-card rounded-lg sticky top-24 h-fit">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                  <User className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <h4 className="font-semibold">{userData?.name || "User"}</h4>
+                  <p className="text-xs text-muted-foreground">Member</p>
+                </div>
+              </div>
+
+              <nav className="flex flex-col gap-2">
+                <button
+                  onClick={() => setActiveTab("dashboard")}
+                  className={`flex items-center gap-3 px-3 py-2 rounded ${activeTab === "dashboard" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+                >
+                  <Home className="h-4 w-4" />
+                  <span>Dashboard</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("accommodations")}
+                  className={`flex items-center gap-3 px-3 py-2 rounded ${activeTab === "accommodations" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+                >
+                  <Bed className="h-4 w-4" />
+                  <span>Accommodations</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("bookings")}
+                  className={`flex items-center gap-3 px-3 py-2 rounded ${activeTab === "bookings" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+                >
+                  <Calendar className="h-4 w-4" />
+                  <span>My Bookings ({bookings.length})</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("feedback")}
+                  className={`flex items-center gap-3 px-3 py-2 rounded ${activeTab === "feedback" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  <span>Send Feedback</span>
+                </button>
+              </nav>
+
+              <div className="mt-4 border-t border-border pt-4">
+                <button onClick={handleOpenProfileSettings} className="w-full flex items-center gap-2 px-3 py-2 rounded hover:bg-muted">
+                  <Settings className="h-4 w-4" />
+                  Profile Settings
+                </button>
+                <button onClick={handleSignOut} className="w-full flex items-center gap-2 px-3 py-2 rounded text-red-600 hover:bg-muted">
+                  <LogOut className="h-4 w-4" />
+                  Sign Out
+                </button>
+              </div>
+            </aside>
+
+            <div>
           {/* Dashboard Tab */}
           {activeTab === "dashboard" && (
             <>
-              <div className="text-center mb-8">
-                <h2 className="text-3xl font-serif font-bold">Dashboard</h2>
-                <p className="text-muted-foreground">Overview of available accommodations</p>
+                {/* Hero landing for user dashboard */}
+              <div className="relative rounded-lg overflow-hidden mb-8">
+                <div className="absolute inset-0 z-0">
+                  <Image src="/jopats.jpg" alt="Jopats Resort" fill className="object-cover brightness-75" />
+                  <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-black/30 to-transparent" />
+                </div>
+                <div className="relative z-10 px-6 py-10 md:py-16 lg:py-20 max-w-7xl mx-auto">
+                  <div className="max-w-3xl text-white">
+                    <h1 className="text-3xl md:text-4xl lg:text-5xl font-serif font-bold">Welcome back, {userData?.name || "Guest"} ✨</h1>
+                    <p className="mt-3 text-sm md:text-lg text-white/90 leading-relaxed">Relax and unwind — explore available rooms, cottages, and manage your bookings. We saved your preferences to make booking easier.</p>
+
+                    <div className="mt-6 flex flex-col sm:flex-row gap-3">
+                      <Button size="lg" className="bg-primary text-primary-foreground px-6 py-3 text-base" onClick={() => setActiveTab("accommodations")}>
+                        Browse Accommodations
+                      </Button>
+                      <Button size="lg" variant="outline" className="px-6 py-3 text-base" onClick={() => setActiveTab("bookings")}>
+                        My Bookings ({bookings.length})
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Statistics Cards */}
@@ -1512,7 +1765,7 @@ export default function UserPage() {
                   </Button>
                 </Card>
               ) : (
-                <div className="grid gap-4">
+                <div ref={bookingsRef} className="grid gap-4">
                   {bookings.map((booking) => (
                     <Card key={booking.id} className="p-6">
                       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -1536,15 +1789,19 @@ export default function UserPage() {
                                 <MoreVertical className="h-5 w-5" />
                               </button>
                               {openBookingMenu === booking.id && (
-                                <div className="absolute right-0 mt-1 w-48 bg-card border border-border rounded-lg shadow-lg z-10">
-                                  <button
-                                    onClick={() => handleEditBooking(booking)}
-                                    disabled={booking.status === "completed" || booking.status === "cancelled"}
-                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    <Edit className="h-4 w-4" />
-                                    Edit Booking
-                                  </button>
+                                <div className="absolute right-0 mt-1 w-56 bg-card border border-border rounded-lg shadow-lg z-10">
+                                  {/* Edit allowed for owner or admin */}
+                                  {(booking.userId === user?.uid || booking.guestEmail === user?.email || userData?.isAdmin) && (
+                                    <button
+                                      onClick={() => handleEditBooking(booking)}
+                                      disabled={booking.status === "completed" || booking.status === "cancelled"}
+                                      className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                      Edit Booking
+                                    </button>
+                                  )}
+
                                   <button
                                     onClick={() => handlePrintReceipt(booking)}
                                     className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors"
@@ -1552,6 +1809,30 @@ export default function UserPage() {
                                     <Printer className="h-4 w-4" />
                                     Print Receipt
                                   </button>
+
+                                  {/* Cancel booking visible only to booking owner */}
+                                  {(booking.userId === user?.uid || booking.guestEmail === user?.email) && (
+                                    <button
+                                      onClick={() => handleCancelBooking(booking)}
+                                      disabled={booking.status === "completed" || booking.status === "cancelled"}
+                                      className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-red-600"
+                                    >
+                                      <X className="h-4 w-4" />
+                                      Cancel Booking
+                                    </button>
+                                  )}
+
+                                  {/* Mark No-Show reserved for admins */}
+                                  {userData?.isAdmin && (
+                                    <button
+                                      onClick={() => handleMarkNoShow(booking)}
+                                      disabled={booking.status === "completed" || booking.status === "cancelled" || booking.status === "no-show"}
+                                      className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      <User className="h-4 w-4" />
+                                      Mark No-Show
+                                    </button>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -1600,6 +1881,15 @@ export default function UserPage() {
                               <span className="font-medium font-mono">
                                 {booking.referenceNumber || "N/A"}
                               </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Discount: </span>
+                              <span className="font-medium">{booking.discountPercent ? `${booking.discountPercent}%` : "—"}</span>
+                              {booking.seniorId && (
+                                <div className="mt-2">
+                                  <a href={booking.seniorId} target="_blank" rel="noopener noreferrer" className="text-sm text-primary underline">View Senior ID</a>
+                                </div>
+                              )}
                             </div>
                             <div>
                               <span className="text-muted-foreground">Total Price: </span>
@@ -1691,6 +1981,8 @@ export default function UserPage() {
             </>
           )}
         </div>
+      </div>
+    </div>
       </section>
 
       {/* Booking Modal */}
@@ -1825,6 +2117,35 @@ export default function UserPage() {
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">Use this reference number for payment</p>
+                </div>
+
+                {/* Senior Discount */}
+                <div className="mt-4">
+                  <label className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={bookingForm.senior}
+                      onChange={(e) => setBookingForm({ ...bookingForm, senior: e.target.checked })}
+                    />
+                    <span className="text-sm">Senior Citizen Discount (10%)</span>
+                  </label>
+                  {bookingForm.senior && (
+                    <div className="mt-3 p-3 bg-muted rounded-lg">
+                      <label className="block text-sm font-medium mb-2">Upload Senior Citizen ID *</label>
+                      <input
+                        type="file"
+                        accept="image/*,.pdf"
+                        onChange={handleSeniorIdChange}
+                        className="block w-full text-sm text-muted-foreground cursor-pointer"
+                      />
+                      {seniorIdPreview && (
+                        <div className="mt-2">
+                          <img src={seniorIdPreview} alt="Senior ID preview" className="max-h-40 rounded-lg border border-border" />
+                        </div>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-2">Please upload a photo or scan of your Senior Citizen ID to apply the discount.</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* GCash Payment Section */}
@@ -1981,8 +2302,23 @@ export default function UserPage() {
                 </div>
                 <div className="flex gap-2 justify-end pt-4">
                   <Button type="button" variant="outline" onClick={() => setEditingBooking(null)}>
-                    Cancel
+                    Close
                   </Button>
+
+                  {(editingBooking.userId === user?.uid || editingBooking.guestEmail === user?.email) && editingBooking.status !== "cancelled" && editingBooking.status !== "completed" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="text-red-600"
+                      onClick={async () => {
+                        await handleCancelBooking(editingBooking)
+                        setEditingBooking(null)
+                      }}
+                    >
+                      Cancel Booking
+                    </Button>
+                  )}
+
                   <Button type="submit">
                     Update Booking
                   </Button>
